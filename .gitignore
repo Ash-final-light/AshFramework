@@ -1,0 +1,65 @@
+# Unity generated folders
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# Keep the meta files for versioned assets, but ignore generated metadata.
+/[Mm]emoryCaptures.meta
+/[Rr]ecordings.meta
+
+# Uncomment this line if Asset Store tools should not be versioned.
+# /[Aa]ssets/AssetStoreTools*
+
+# IDE and editor files
+.vs/
+.idea/
+.vscode/
+.consulo/
+.fleet/
+ExportedObj/
+*.csproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# Unity crash reports and diagnostics
+sysinfo.txt
+crashlytics-build.properties
+
+# Builds and packaged applications
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Gradle and Android generated files
+.gradle/
+/[Aa]ssets/[Pp]lugins/[Aa]ndroid/.gradle/
+
+# Test and coverage output
+/[Tt]est[Rr]esults/
+/[Cc]overage[Rr]eport/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
