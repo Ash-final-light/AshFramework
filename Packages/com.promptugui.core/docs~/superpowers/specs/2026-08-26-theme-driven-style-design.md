@@ -1,0 +1,773 @@
+# 主题驱动样式：`<Theme>` 承载 style pack + 运行时重合并
+
+**日期**：2026-08-26
+**状态**：设计中，未实施。
+**作用域**：把 `<Style>` 属性包纳入 `<Theme>` 的管辖范围——`<Theme>` 从"只有颜色 token"扩展为"颜色 token + 命名属性包"。因为 class 是**属性宏**（对任何控件的任何属性生效），主题的表达力随之从"换配色"跃迁到"换皮肤"：sprite、圆角、描边、字号、内边距、玻璃参数都能整套替换。代价是 class→属性的合并必须从"展开期一次性"变成"主题切换时可重跑"。
+**关联**：`<Style>` / `class=` 机制与合并优先级见 [procedural-style](2026-08-23-procedural-style-design.md) §3–§4，本设计不改那套语义，只加一层作用域；颜色 token 与 `base=` 链见 [color-tokens](2026-05-28-color-tokens-design.md)；主题切换触发 `Screen.ReSolve` 的既有链路见 `Runtime/Application/Screen.cs:207`。本设计**依赖** §9 的 lint 改造才能安全落地（两条新约束是静态约束，运行时查不出来）。
+
+---
+
+## 1. 背景与目标
+
+今天 `<Theme>` 只管颜色：
+
+```xml
+<Theme name="dark" base="light">
+  <Color name="surface" value="#111318"/>
+</Theme>
+```
+
+换主题只能改颜色值。但界面的"皮肤感"大部分不在颜色上——像素 9-slice 的底图、圆角半径、描边粗细、字号、玻璃磨砂度，这些今天只能靠作者手写 Variant 或者干脆做两套 XML。
+
+而 `<Style>` 已经是一个**对任何属性生效**的属性包。把它接进 `<Theme>`，主题就自动获得了整个属性面的表达力，不需要为每种视觉维度单独发明 theme token 类型：
+
+```xml
+<Style name="card" sprite="ui:panel" color="surface/0.85" radius="16" borderWidth="1"/>
+
+<Theme name="pixel">
+  <Style name="card" sprite="px:panel" radius="0" borderWidth="2"/>
+</Theme>
+```
+
+`<Frame class="card">` 在 `pixel` 主题下自动换成像素底图、直角、粗描边。
+
+**设计约束**：
+
+1. **不改 `<Style>` / `class=` 的既有语义**。合并优先级（inline > 右 class > 左 class、按属性名原子）、"不适用即忽略"、commons 共享 / `as` 命名空间 / 热重载——全部原样。本设计只在查找 `StyleDef` 时多插一层主题作用域。
+2. **不新增 ReSolve**。主题切换今天就已经触发全量 `Screen.ReSolve`；本设计只在那次 ReSolve 之前插一步"重算属性字典"。
+3. **零成本回归**。不写 `<Style>` 进 `<Theme>` 的工程，代码路径与今天等价（没有 theme-scoped pack → 没有重合并）。
+4. **静默的错等于没有错**。主题切换后"某个角变不回去"这类残留是无法 debug 的，所以本设计的两条约束（§6.1 / §6.2）必须由 lint 静态拦截，而不是文档口头约定。
+
+## 2. 现状盘点（含实测基线）
+
+三层机制今天各自的形态：
+
+| 层 | 今天在哪跑 | 主题切换时 |
+|---|---|---|
+| 颜色 token | 属性 apply 期解析（`ColorSpec` → `ThemeStore.LookupChained`） | ✅ 随 ReSolve 重解析 |
+| `class=` 合并 | 展开期一次性（`TemplateExpander` → `StyleMerger.Apply`），展开产物**不含 `class`** | ❌ 已经烘死 |
+| 属性 apply | `ControlAttributeApplier.Apply`，初次实例化与 ReSolve 共用 | ✅ 全量重放 |
+
+**实测基线**（host 工程 EditMode / Mono，200 个 `class="card"` 的 `<Frame>`）：
+
+| 项目 | 耗时 |
+|---|---|
+| `class` 合并开销（有 class vs 同等属性内联，展开产物相同） | **0.449 ms**（≈2.2 μs/节点） |
+| 一次 `Screen.ReSolve()`（VStack 内） | **31.5 ms** |
+| 一次 `Screen.ReSolve()`（无 LayoutGroup） | **1.97 ms** |
+| 合并占一次 ReSolve | **1.47 %**（LayoutGroup 内）／ **23 %**（无 LayoutGroup，绝对值仍 <0.5 ms） |
+
+0.449 ms 是**上界**：现在的 `StyleMerger.Apply` 每节点都 `CloneWithoutClass`（新建 ElementNode + 拷贝全部字典）；运行时重合并不需要克隆。
+
+**顺带记录**（不在本 spec 范围，另开 issue）：ReSolve 在 LayoutGroup 内是 O(N²)——100/200/400 节点分别 8.7/31.5/118.2 ms；同样节点数换成普通 `<Frame>` 父节点是 1.1/2.0/4.3 ms，完全线性。二次项来自 LayoutGroup 的重复 rebuild，与程序化属性无关（裸 Frame 也一样二次）。（**归因错了，后已查实并修掉稳态那一半——见文末《LayoutGroup 里的 ReSolve —— 那个 O(N²) 的真身》**）
+
+## 3. 语法：`<Theme>` 内嵌 `<Style>`
+
+`<Theme>` 的子元素从「只能是 `<Color>`」放宽为「`<Color>` 或 `<Style>`」。语法与顶层 `<Style>` 完全一致（属性包、无子节点、name kebab-case）：
+
+```xml
+<!-- 全局基线：定义完整属性集合 -->
+<Style name="card"    sprite="ui:panel" color="surface/0.85" radius="16" borderWidth="1" borderColor="stroke/0.15"/>
+<Style name="btn-cta" sprite="ui:btn"   pressedSprite="ui:btn-down" fontSize="15" radius="8"/>
+
+<Theme name="modern">
+  <Color name="surface" value="#f7f8fa"/>
+  <Color name="stroke"  value="#1b1e28"/>
+</Theme>
+
+<Theme name="pixel" base="modern">
+  <Color name="surface" value="#e8d8b0"/>
+  <Style name="card"    sprite="px:panel" radius="0" borderWidth="2"/>
+  <Style name="btn-cta" sprite="px:btn" pressedSprite="px:btn-down" fontSize="12" radius="0"/>
+</Theme>
+```
+
+`class="card"` 的写法不变。`<Screen>` 依然不接受 `class`。
+
+**为什么内嵌而不是 `<Style theme="pixel">`**：`<Theme>` 已经是一个作用域块，`<Color>` 就在里面；`base=` 链、`ThemeStore` 的注册 / 热重载 / 跨文件重名检测全都按块走。内嵌复用这一整套，`<Style theme=...>` 则要为样式单独造一遍。
+
+## 4. 解析与查找
+
+### 4.1 IR
+
+`ThemeBlock` 增一个字段，与 `Colors` 并列：
+
+```csharp
+public sealed class ThemeBlock
+{
+    public string Name;
+    public string BaseName;
+    public List<ColorEntry> Colors = new();
+    public Dictionary<string, StyleDef> Styles = new();   // 新增
+}
+```
+
+`ParseTheme` 的子节点分支从 `if (child.Name != "Color") throw` 改为 `Color` / `Style` 双分支，`Style` 分支直接复用现有 `ParseStyle` 的属性解析（抽成一个 `ParseStyleAttributes(el, name, forbidden)` helper，顶层 `<Style>` 与主题内 `<Style>` 共用，只是禁用名单不同——见 §6.3）。
+
+`ThemeStore.Entry` 同步增 `Styles`，`Register` / `ReplaceFromSrc` 一并搬运。
+
+### 4.2 有效 pack：全局样式是每条主题链的隐式根
+
+查一个 `class="card"` 时，有效属性包 = **从根到叶依次折叠**：
+
+```
+全局 <Style name="card">  →  base 链最上游主题的 card  →  ...  →  当前主题的 card
+```
+
+折叠用**与 `StyleMerger` 多 class 折叠完全相同的原子规则**：后来者声明的每个属性名（`radius` 与 `radius.mobile` 视为同一个名字）整体屏蔽先前的同名声明，然后写入自己的值。实现上直接复用 `StyleDef.DeclaredNames` + 现有折叠循环，不新写一份。
+
+这个"全局样式当隐式根"的决定有三个直接好处：
+
+1. **零成本回归**。不写主题内 `<Style>` 的工程，链只有一环，结果与今天逐字节相同。
+2. **§6.1 的残留问题基本自动消失**。全局样式提供了完整的属性名基线，主题只覆盖值；某个主题漏写 `radius` 时会回落到全局值，而不是"没有值"。
+3. **作者心智模型简单**：全局 `<Style>` 是"这个组件长什么样"，主题内 `<Style>` 是"在这套皮肤下哪几个参数不一样"。
+
+查不到任何一环 → 沿用现有的 `unknown style` 硬错误。
+
+### 4.3 共享 / 命名空间 / 热重载
+
+全部沿用 `<Theme>` 现有语义：主题跟着 `<Import>` 走、进 commons、跨文件同名硬冲突、`ReplaceFromSrc` 热重载。主题内 `<Style name>` 是一个**引用**，跟 `class=` 用同一套拼法：`card` 指本文档自己的池，`ui:card` 指 `<Import as="ui">` 带进来的那份。命名空间是身份的一部分，`card` 与 `ui:card` 永不互相折叠。**顶层** `<Style>` 仍然只能写裸名——它的命名空间来自导入方的 `as=`，不来自它给自己写的名字，写冒号是 parse error。
+
+## 5. 运行时重合并
+
+### 5.1 展开期改动
+
+`StyleMerger.Apply` 今天做两件事：合并 pack、删掉 `class`。改为：
+
+- **保留** `class` 属性到展开产物（下游只有本机制读它，`ControlAttributeApplier` 已经会跳过不认识的属性名，无副作用）；
+- 在节点上额外记录**作者内联写的属性名与值**：`ElementNode.InlineAttributes` / `InlineVariantOverrides`（仅带 class 的节点分配，其余为 null）。
+
+`Attributes` / `VariantOverrides` 的最终内容不变，所以 `ScreenInstantiator` 与 `ControlAttributeApplier` **一行都不用改**。
+
+### 5.2 重合并点
+
+```
+UI.Theme.Current = "pixel"
+        │
+        ├─ 遍历 UI._docs 的展开树：对每个带 class 的节点
+        │     Attributes      = InlineAttributes      ∪ EffectivePack(class, newTheme)
+        │     VariantOverrides = InlineVariantOverrides ∪ pack 的 .variant 部分
+        │     （inline 优先，按属性名原子——与 StyleMerger 同一段代码）
+        │
+        └─ Theme.Changed → 每个 open Screen 的 ReSolve()（既有链路，不改）
+```
+
+在**文档级**而非 Screen 级重合并：同一份展开树可能被多个同时打开的 Screen 共享（`_nodeMap` 的 key 是共享的 ElementNode），主题又是全局的，所以按文档走一遍即可，不会重复劳动。
+
+`ScreenInstantiator` 为 `BindItems` 克隆出来的动态子树（`_dynamicSubtrees`）不在 `_docs` 里，需要一并遍历——ReSolve 已经有这个遍历（`ApplyScalesTo`），复用同一份子树列表。
+
+### 5.3 代价
+
+按 §2 的实测：一次主题切换从 31.5 ms 变成约 32 ms（200 节点，LayoutGroup 内）。稳态与 `UI.Open` 路径零新增开销。**性能不是这个特性的成本项**，成本在下面三条约束和 §9 的 lint 改造。
+
+## 6. 三条约束
+
+### 6.1 属性名集合一致（残留问题）
+
+`ControlAttributeApplier.cs:58-70` 遍历的是 `node.Attributes.Keys ∪ node.VariantOverrides.Keys`，解析不出值就 `continue`。**属性在新状态下"没有值"时 ReSolve 根本不碰它，控件保留旧值。**
+
+今天用 Variant 就能复现（与主题无关的既有行为）：
+
+```xml
+<Image id='v' color.alt='#445566'/>                   <!-- 只在 variant 里声明 -->
+<Image id='b' color='#112233' color.alt='#445566'/>   <!-- 有基础值 -->
+```
+```
+alt=false (初始)   v=#FFFFFF   b=#112233
+alt=true           v=#445566   b=#445566
+alt=false (回来)   v=#445566   b=#112233   ← v 卡住
+```
+
+同形的还有 `Control.cs:357` 的 `if (hidden.HasValue) Hidden = ...`，以及 `Btn.cs:233` 的 `_pressedSpriteAuthored = true` 闩锁（一旦某主题写过 `pressedSprite`，之后省略它的主题拿不回内置按下效果）。
+
+**约束**：对任意样式名 `s`，所有可能激活的主题解析出的 `EffectivePack(s, T)` 必须有**相同的属性名集合**。
+
+§4.2 的"全局样式当隐式根"让绝大多数情况自动满足；剩下的漏网之鱼（某属性只在部分主题的 pack 里出现、全局样式没有基线值）由新 lint 规则 `PUI-THEME-STYLE-SHAPE` 拦截，报错信息直指"把 `radius` 加进全局 `<Style name='card'>` 作为基线，或在每个主题里都声明"。
+
+**不采用**的替代方案：让 ReSolve 对"消失的属性"回放控件默认值。那需要 237 个 `[UIAttr]` setter 各自定义"复位语义"，是本设计 10 倍的工作量，而且很多属性（`mask` / `type` / `fit`）根本没有干净的"默认"。
+
+### 6.2 theme-scoped style 不参与 `if=`
+
+`TemplateExpander.cs:259` 在**展开期**求值 `if=`，false 的节点 `return null`，展开产物里根本不存在。主题要让它重新出现只能重新展开 + 重建 GameObject。
+
+**约束**：theme-scoped style 不得（直接或经由模板 Param）驱动 `if=`。
+
+分两处拦截：
+
+- 节点自身：`<Frame class="skin" if="...">` —— `if` 已经在 `StyleForbiddenAttrs` 里，pack 里带不了 `if`，无需新增。
+- 经由 Param：`<ui.Card class="skin">` 且 `skin` 提供的 Param 被模板体的 `if="{{p}}"` 消费 → 新 lint 规则 `PUI-THEME-STYLE-IF-PARAM`。
+
+现状勘察：项目里现有 `.ui.xml` **零处**使用 `if="{{...}}"`（两种引号都查过），所以这条约束现在不损失任何东西。
+
+### 6.3 theme-style 专用黑名单
+
+顶层 `<Style>` 的禁用名单是 `{ id, if, class, bind }`（`UIDocumentParser.cs:324`）。主题内 `<Style>` 在此之上再禁两组：
+
+```csharp
+private static readonly string[] ThemeStyleForbiddenAttrs =
+{
+    "id", "if", "class", "bind",                    // 与顶层 <Style> 相同
+    "text", "isOn", "value", "current",             // 运行时独占状态
+    "mask", "showMask", "maskPadding",              // 已声明不支持按状态切换
+};
+```
+
+**运行时独占状态**（`text` / `isOn` / `value` / `current`）：`ControlAttributeApplier` 的 `DefaultTextLockedByRuntime` / `RuntimeStateLockedByRuntime` 会在"运行期被代码改过"时**跳过重放**，所以主题写进去的新值大概率被静默吞掉——比不生效更糟的是不确定地生效。这四个名字来自 `BuiltinPrimitives.Register` 的 `defaultTextAttr` / `runtimeStateAttr` 声明。
+
+**mask 家族**：`PUI-MASK-VARIANT`（`MaskAttributeRules.CheckVariantOverrides`）与 `PUI-PROG-MASK-VARIANT` 已经把"按 Variant 切换 mask 模式"整体判为 v1 不支持，理由正是"requires AddComponent / Destroy which has performance / lifetime issues"。主题切换走的是同一条重放路径，所以是同一件不支持的事换了个入口，必须一并挡住——否则作者会绕过一条已有的 lint 规则。
+
+自定义控件若注册了名单外的 `runtimeStateAttr`，`ControlRegistry.Register` 增一条 `Debug.LogWarning`，提示该属性不应经由主题样式提供。（不做成硬错误：Core 层的 parser 不该反向依赖 Registry。）
+
+## 7. 模板边界
+
+`class=` 出现在三个位置，主题跟随能力不同：
+
+| 位置 | 展开期行为 | 跟随主题 |
+|---|---|---|
+| 模板**体内**的节点 | `TemplateExpander.cs:273` → `StyleMerger.Apply(prepared, styles, null)`，**不过滤**，与普通节点同一行代码 | ✅ 完全一样 |
+| 调用节点的 class → **公共属性**那半 | `ExpandInvocation` 拷到实例根的 `Attributes`（`TemplateExpander.cs:229-231`） | ❌ 设计期误判，见 §16 |
+| 调用节点的 class → **Param** 那半 | `Substitution.Apply` 做字符串替换，烘进模板体的属性值 | ⚠️ 见下 |
+
+Param 那半**技术上可解**：`ElementNode.AttributesRaw` 已经存了任何含 `{{...}}` 的属性的替换前原文（`UIDocumentParser.cs:497-502`），`ElementNode.TextArgs` 存了整份实参（`TemplateExpander.cs:288`），i18n 的 locale 切换正是拿这两样重新替换的（`ControlAttributeApplier.cs:76`）。主题重替换可以走同一条路。
+
+**不做，且是永久决定**（M3 已关闭，理由见 §16）：调用节点上使用 theme-scoped style → lint 报 `PUI-THEME-STYLE-ON-INVOCATION`，引导作者把 class 下沉到模板体内，或改用全局 `<Style>`（全局样式在调用点照常工作，只是不跟随主题）。规则覆盖的是整个「调用点上的 theme-scoped class」，不只 Param 那半 —— M2.3 实测两半都不跟随。
+
+安全性记录：`id` **不参与替换**（`SubstituteAttrs` 里是 `Id = src.Id`，只有 `Attributes` / `VariantOverrides` 过 `Substitution.Apply`；`id` 在 parser 阶段就 `continue` 掉、从不进 `Attributes`）。所以主题永远改不到 id，`_byId` / `Get<T>` 的路径不受影响。
+
+## 8. Setter 可逆性（既有缺陷，本 spec 只钉 Red test）
+
+§6.1 是"属性没有值"的问题；这一节是"属性有新值但 setter 不还原旧值"的问题。
+
+对 `Runtime/Controls/` 下全部 **237 个 `[UIAttr]` 属性**做了逐个审计，不可逆的有 6 处，但要分成两类——**只有第一类是缺陷**：
+
+**A. 真缺陷（无任何规则覆盖，作者写出来既不报错也不工作）**
+
+| 属性 | 问题 | 位置 |
+|---|---|---|
+| `Tab.selectedSprite` | 给 sprite 时把 `transition` 设成 `None`，改回 `none` 不恢复 `ColorTint` —— 该 Tab 从此没有任何 hover/press 反馈，且没有任何属性能救回来 | Tab.cs:277 / 388 |
+| `Progress.bg` / `Progress.frame` | `SetActive(true)` 无反向路径，`""` 直接 early-return | Progress.cs:94 / 118 |
+
+**B. 已声明的不支持（不是缺陷）**：`Frame.mask` / `Image.mask` / `RawImage.mask` / `Progress.mask` 的 `AddComponent` 只加不减是真的，但 `PUI-MASK-VARIANT` 与 `PUI-PROG-MASK-VARIANT` 已经把按状态切换 mask 整体判为 v1 不支持，理由与我们发现的完全一致。所以它们不该"修"，而该**保持不支持并堵住新入口**——见 §6.3 把 mask 家族加进主题黑名单。
+
+**C. 顺带发现的两处覆盖缺口（M0 一并钉住）**
+
+| 缺口 | 说明 |
+|---|---|
+| `RawImage` 的 mask 家族无人管 | `IRWalker` 只为 `Frame` / `Image` 分发 `MaskAttributeRules`；而 `VariantBaseRules` 又把 mask 家族整体排除（注释写"Owned by PUI-MASK-VARIANT in ALL cases"）。于是 `<RawImage mask='rect' mask.alt='self'/>` **两道闸门都漏**，静默接受、静默损坏 |
+| `PUI-PROG-MASK-VARIANT` 的文案有误 | 消息明说 "other attrs (value / fill / **bg** / mode / direction) are safe in variants"（`ProgressAttributeRules.cs:72`），但 A 类已证明 `bg` 不安全。修 `Progress.bg` 时必须同步改这句 |
+
+实测确认（今天的代码，纯 Variant，不需要任何新特性）：
+
+```
+<Frame mask='rect' mask.alt='none'>  →  翻转后 RectMask2D 仍在
+<Image mask='self' mask.alt='rect'>  →  翻转后 RectMask2D + Mask 双份
+<Image color=…     color.alt=…>      →  翻转后正常（对照组）
+```
+
+误报、实际可逆的：`Frame.weld`（`weld<=0` 会 `SetWeld(0)`，源码注释明写是为 Variant 准备的）、`Icon.name`、`Btn.text` / `Tab.text`、`Tab.sprite`、`Toggle.group`、`Markdown.*Color`、`Image.showMask`——空值都有明确复位分支。
+
+**A / C 两类都是既有 bug，两行 XML 用 `.variant` 就能复现，不记在本特性账上。** 本 spec 的动作是：**先写 Red test 钉住正确行为**，修复另开 PR。这样主题特性上线时，这批用例要么已绿、要么明确挂着可见，不会变成"主题一换就有人报奇怪的 bug 但没人知道根因"。
+
+Red test 的写法：每条都拿**翻转后的控件**对比**用目标值全新构建的控件**，而不是对比硬编码期望值——因为要断言的性质正是"A→B 之后必须等同于一开始就用 B 构建"，这也正是主题切换的正确性定义。B 类另配一条**绿色的特征化测试**，把"mask 就是不可逆"钉成显式契约，将来谁真把它做可逆了会看到这条测试失败，从而知道要一并撤掉 `PUI-MASK-VARIANT`。
+
+## 9. Lint：让 CLI 追平 runtime（本设计的前置依赖）
+
+### 9.1 现状
+
+`IRWalker.Walk` 走的是**解析后、展开前**的原始 IR。因此：
+
+- **模板体**被检查了，但以"声明空间"身份，且为此**主动关掉了 5 组规则**：`NavTargetRules.CheckNavTarget`（无 screen id 集合）、`StateTriggerRules.CheckStateSource`（可点击祖先在调用点才定）、`<Tab>` 父节点检查、`LayoutGroupChildRules.CheckNonLayoutChild`（模板体根的真实父节点在调用点才定）、`VariantBaseRules`（实例根可能从调用点拿到 CommonAttr 基线）。
+- **模板调用点从来没被检查过**：tag 不匹配任何 per-tag 规则，Param 值不验证，Slot 子节点按"未知父节点"判。
+- **style** 靠 `StyleAttributeView` 在原始 IR 上模拟一次 merge；查不到的 style 名（几乎必然来自 `<Import>` 的 commons 库，单文件 CLI 看不见）→ `IsUncertain` → 规则闭嘴。
+
+而 `ScreenInstantiator` 走的是 `TemplateExpander.Expand` **之后**的树，7 组规则（`LayoutGroupChildRules` / `MaskAttributeRules` / `ImageFitRules` / `ProgressAttributeRules` / `TabRules` / `CarouselRules` / `NavTargetRules.CheckNav`）已经作用于展开后的值。
+
+**结论：runtime 查展开后，CLI 查展开前。** 把 CLI 挪到展开后，模板检查是顺带白拿的，`IsUncertain` 的沉默模式基本可以退休——主题样式让 lint 变弱的问题因此自然消失，不需要单独想办法。
+
+### 9.2 挡路的是依赖，不是规则
+
+`.lint/UIXmlLint/UIXmlLint.csproj` 的注释已经写明：Template/Variants 被排除是因为它们 type-reference `PromptUGUI.Application`，"even though the algorithm is pure"。实查：
+
+```
+Runtime/Core/Template/StyleMerger.cs      -> Application.DocumentLoader.StyleKey
+Runtime/Core/Template/TemplateExpander.cs -> Application.DocumentLoader.{LoadedDoc, StyleKey, TemplateKey}
+```
+
+零个 `UnityEngine` 引用。`DocumentLoader` 本身除了 `Awaitable` 异步管道，整个 body 就是 `UIDocumentParser.Parse` + 字典合并 + 冲突检测，纯 C#。
+
+### 9.3 三步
+
+1. **搬三个类型**：`LoadedDoc` / `TemplateKey` / `StyleKey` → `Core/IR/`。搬完 `Core/Template/**` 整个目录进 CLI 编译集。`VariantResolver` 不动——展开产物保留 `VariantOverrides`，variant 本来就是运行时解析。
+2. **把 load/merge 算法从 IO 里剥出来**：`LoadInternalAsync` 现在把「递归 + resolver + 合并 + 查重」揉在一起。抽成 resolver 泛型的同步核心放 `Core/`，`DocumentLoader` 退化成 async 薄壳。**这是真正的工作量**，同时也是 `IsUncertain` 存在的根本原因。
+3. **CLI 加文件系统 resolver**（相对路径解析 `src`），然后 `IRWalker.Walk(expandedDoc)`。
+
+### 9.4 主题维度
+
+CLI 能展开之后，`--theme <name>` / `--theme all` 按每个主题各展开一遍交叉验证。这是唯一能真正保住 `GlassRules` / `PureContainerVisualAttrRules` 的做法——否则一个节点在主题 A 下进 glass 模式、B 下不进，静态永远说不清。
+
+新增三条规则：
+
+| 代码 | 检查 |
+|---|---|
+| `PUI-THEME-STYLE-SHAPE` | §6.1：同一样式名在不同主题下解析出的属性名集合不一致 |
+| `PUI-THEME-STYLE-IF-PARAM` | §6.2：theme-scoped style 提供的 Param 被 `if=` 消费 |
+| `PUI-THEME-STYLE-TEMPLATE-PARAM` | §7：theme-scoped style 用在模板调用节点上且提供了 Param |
+
+### 9.5 两遍都跑
+
+展开后的树里 `if="false"` 的节点已不存在、`<Variant>` 的 Add 块也已分离。展开前那一遍能查作者写的死代码，展开后那一遍查真正会实例化的东西。保留两遍、按 `(Code, Id, Message)` 去重——CLI 不在热路径上。
+
+**报错溯源**：`LintIssue` 现在是 `(Code, Tag, Id, Message)`，CLI 输出 `{path}: [{code}] {message}`，**本来就没有行号**，所以不存在"展开后行号错位"的损失。但跟进 `<Import>` 之后 issue 可能来自 commons 文件而非入口文件，需要在 `ElementNode` 上带 origin src + 模板调用链（`StyleDef.OriginSrc` 已是这个先例）。
+
+## 10. 明确不支持（错误，非静默降级）
+
+- 主题内 `<Style>` 携带 `id` / `if` / `class` / `bind`、运行时独占状态（`text` / `isOn` / `value` / `current`）、或 mask 家族（`mask` / `showMask` / `maskPadding`）→ parse error（§6.3）。
+- 主题内 `<Style>` 带子节点、name 非 kebab-case、同主题内重名 → parse error，消息与顶层 `<Style>` 对齐。
+- 同一样式名在不同主题下属性名集合不一致 → lint error（§6.1）。
+- theme-scoped style 驱动 `if=`，或用在模板调用节点上提供 Param → lint error（§6.2 / §7）。
+- `<Screen class=...>` → 沿用现有 parse error。
+
+## 11. 不做的事（YAGNI 记录）
+
+- **不做选择器 / 级联 / 继承树**。`<Style>` 依然是属性宏，主题只是给它加了一层作用域。
+- **不做 setter 复位语义**。§6.1 用属性名集合约束绕开，而不是给 237 个 setter 定义"默认值"。
+- **不做主题切换的 GameObject 重建**。`if=` 驱动的树形变化明确不支持，而不是"重建子树来支持它"。
+- **不做主题内 `<Template>`**。模板是结构，主题是皮肤；结构随主题变是另一个量级的特性，没有需求前不开这个口子。
+- **不做过渡动画**。主题切换是瞬时的属性重放；跨主题的补间需要属性级插值语义，另开 spec。
+
+## 12. 测试（Red 先行）
+
+EditMode（`UI.ResetForTests` 约定）：
+
+1. **解析**：`<Theme>` 内 `<Style>` 进 `ThemeBlock.Styles`；§10 全部 parse error；`ThemeStyleForbiddenAttrs` 八个名字逐个报错。
+2. **有效 pack 折叠**：全局样式当隐式根；`base=` 链上游→下游覆盖；原子性（主题声明 `radius.mobile` 屏蔽全局 `radius`）；主题不声明该样式时回落全局；三处都查不到时报 `unknown style`。
+3. **运行时重合并**：`<Frame class="card">` 切主题后材质参数变化且 **GameObject 未重建**（对象引用比对）；inline 属性在切主题后仍然压过主题 pack；带 `.variant` 的 pack 在切主题 + 切 variant 的四种组合下取值正确。
+4. **残留回归**（§6.1 的正面用例）：全局样式提供基线时，主题 A→B→A 往返后属性值回到初始。
+5. **模板**：模板体内 class 跟随主题（正面）；调用点 class 的 CommonAttrs 半跟随主题（正面）；调用点 class 提供 Param 时 lint 报错（`PUI-THEME-STYLE-TEMPLATE-PARAM`）。
+6. **commons / 热重载**：主题内 `<Style>` 入 commons 池、跨文件同名冲突、`ReloadCommonLibraryAsync` 换池后已打开 Screen 的视觉跟随变化。
+7. **可逆性 Red test**（§8，M0 已交付，见 §15）：A 类三条 `.variant` 往返——`Tab.selectedSprite` 归零后 `transition` 回 `ColorTint`、`Progress.bg` / `frame` 置空后子节点 `activeSelf == false`；C 类一条 `<RawImage mask.alt=...>` 应报 `PUI-MASK-VARIANT`；B 类一条绿色特征化钉住 mask 的不可逆契约。全部以"翻转后 == 用目标值全新构建"的形式断言。
+8. **主题黑名单**：§6.3 三组名字逐个 parse error；mask 家族被拒时的消息要指向 `PUI-MASK-VARIANT` 而不是只说"不允许"。
+9. **Lint**（`PromptUGUI.Tests.EditMode`，规则是纯 C#）：三条新规则各正反用例；展开后 walk 与展开前 walk 的去重；跟 `<Import>` 后的 origin 归属。
+10. **XSD**：`<Theme>` 允许 `<Style>` 子元素，substring 断言。
+
+PlayMode：一条端到端冒烟——两个主题各带 `<Style name="card">`（不同 sprite + radius），`UI.Theme.Current` 来回切两次，断言材质参数与 sprite 引用跟随、GameObject 实例未变、无 console error。
+
+性能守门：200 节点 `class` 树的主题切换耗时相对切换前基线不劣化超过 5%（用 §2 的测法）。
+
+## 13. SKILL 更新（同 PR，英文）
+
+- `authoring-promptugui-xml/SKILL.md`
+  - **Style & class** 一节：加"theme-scoped style"小节——语法、全局样式当隐式根的折叠顺序、属性名集合一致约束、八项禁用属性、模板调用点的限制。
+  - **Color Tokens** 一节：`<Theme>` 的子元素描述从"only `<Color>`"改为"`<Color>` / `<Style>`"，主表第 68 行同步。
+  - 顶层元素表 `<Theme>` 行、`<Style>` 行同步。
+  - 速查区（1181 行起）的 `STYLE/CLASS` 与 `STYLE LINT` 段补三条新规则代码。
+- `scripting-promptugui-csharp/SKILL.md`：`UI.Theme.Current` 的描述从"重新解析颜色"改为"重新解析颜色**与样式包**"，并说明切换成本量级（§5.3）。
+- `.lint/UIXmlLint/README.md`：展开后 lint、`--theme` 参数、两遍去重。
+
+## 14. 里程碑拆分
+
+| | 内容 | 依赖 |
+|---|---|---|
+| **M0 Red test** | §8 的 A 类 3 条 + C 类 1 条 red test（`Ignore` 挂起），B 类 1 条绿色特征化测试。纯测试，可先合 | 无 |
+| **M1 Lint 展开化** | §9.1–§9.3：搬三个类型、剥离 load/merge、CLI 文件 resolver、`IRWalker` 走展开树、两遍去重 | 无（与主题特性正交，独立有价值） |
+| **M2 主题样式** | §3–§7：IR / parser / ThemeStore / 有效 pack 折叠 / 运行时重合并 / 三条约束 | M1（§9.4 的三条规则要 CLI 能展开） |
+| ~~**M3 模板 Param 跟随**~~ | ~~§7 的 raw + args 重替换~~ —— **不做，已关闭，见 §16** | — |
+
+M0 与 M1 都不依赖主题特性、都能独立合入主干。M1 是 M2 的硬前置：没有它，§6.1 / §6.2 两条约束只能靠文档口头约定，而它们的违规表现是"换主题后某个属性静默不还原"——正是最难 debug 的那一类。
+
+## 15. 实施记录
+
+### M0（分支 `test/attr-reversibility-red`）
+
+审计期把"6 处不可逆"当成 6 个待修 bug 写进了 §8 的第一版；动手时才发现其中 4 处（mask 家族）早已有 `PUI-MASK-VARIANT` / `PUI-PROG-MASK-VARIANT` 把它判为 v1 不支持，理由与审计结论逐字一致。**为它们写"应该可逆"的 red test 会直接推翻一条既有设计决定**，所以改成：B 类保持不支持、加一条绿色特征化测试钉住契约，同时把 mask 家族补进 §6.3 的主题黑名单（同一件不支持的事，不能让主题成为新入口）。
+
+顺带查出两处覆盖缺口（§8 C 类）：`RawImage` 的 mask 家族同时漏出 `MaskAttributeRules` 的分发与 `VariantBaseRules` 的豁免；`PUI-PROG-MASK-VARIANT` 的文案把 `bg` 宣传成 variant-safe。
+
+产出：
+
+| 文件 | 内容 |
+|---|---|
+| `Tests/EditMode/Controls/AttributeReversibilityTests.cs` | A 类 3 条 red（`Ignore`）+ B 类 1 条绿色特征化 |
+| `Tests/EditMode/Lint/IRWalkerMaskTests.cs` | C 类 RawImage 覆盖缺口 1 条 red（`Ignore`）；顺手订正 `Walk_NonFrameNonImageTags_NoMaskIssue` 里"mask 只 Frame/Image 暴露"的过期注释 |
+
+验证：临时摘掉 `[Ignore]` 跑过一遍，4 条全部失败且失败原因正确（`Assume` 守卫全过，证明失败来自缺陷本身而非 setup）；恢复 `[Ignore]` 后全量 EditMode 2250 条 **2246 passed / 0 failed / 4 skipped**。
+
+`[Ignore]` 而非留红：全量跑必须保持是有效的回归信号。修复 PR 逐条摘 `Ignore` 即可。
+
+**本机环境缺口**：没有安装 dotnet SDK，`dotnet format` 与 `UIXmlLint` / `PxlPreview` CLI 在此机器上跑不了。本次改动只有测试文件，已人工核对缩进 / 行尾空白 / 文件结尾换行与同目录既有测试一致。
+
+### M1（分支 `test/attr-reversibility-red`，两个 commit）
+
+§9.3 的三步全部落地，实测行为与设计一致。三处值得记的偏离 / 发现：
+
+**1. `DocumentAssembler` 没有自立命名空间。** 设计里没写它住哪；第一版放 `PromptUGUI.Loading`，编译炸 30 处 —— 那个名字会**遮蔽公共 API `PromptUGUI.Application.Modals.Loading`**（C# 从内往外解析裸标识符，任何 `PromptUGUI.*` 里的 `Loading` 都先命中命名空间）。改放 `PromptUGUI.Template`（它产出的 `LoadedDoc` 正是 `TemplateExpander` 的输入），理由写进了文件头注释。
+
+**2. 两遍走查下沉到 `Core/Lint/DocumentLinter`，而不是留在 `Program.cs`。** 起因是一个实打实的 bug：`count += WalkExpanded(path, doc, Report)` 会先读 `count`（0），再执行右侧（闭包里 `Report` 把 `count` 加到 1），最后 `0 + 0` 把增量覆盖掉 —— 打印了 3 条却汇总成 1 条，**「只有展开遍报错」的文档 exit code 会是 0**。CLI 没有自己的测试工程，这类错误没人挡得住。把逻辑搬进 Core 之后 `PromptUGUI.Tests.EditMode` 能直接测（`DocumentLinterTests`，6 条），`Program.cs` 只剩 I/O 与 src→path 猜测。
+
+**3. 「解析不到的 import 不算错误」是新增的设计决定。** 设计里没考虑：Addressables / 自定义 resolver 的工程根本没有磁盘形态。若按缺失即报错处理，会把今天干净的文件变成构建失败。改为：整条闭包全部解析成功才跑展开遍，否则只跑 raw 并在 stdout 留一行说明。`DocumentLinterTests.UnresolvableImports_SkipExpandedPass_ButKeepRawRules` 钉住这条。
+
+产出：
+
+| 文件 | 内容 |
+|---|---|
+| `Runtime/Core/IR/DocumentKeys.cs` · `LoadedDoc.cs` | 从 `Application.DocumentLoader` 搬出的三个类型 |
+| `Runtime/Core/Template/DocumentAssembler.cs` | Import 闭包合并语义（纯 C#） |
+| `Runtime/Application/DocumentLoader.cs` | 缩成异步预取壳（151 行 → 80 行） |
+| `Runtime/Core/Lint/DocumentLinter.cs` | raw + expanded 两遍 + 去重 + `PUI-EXPAND` |
+| `.lint/UIXmlLint/{UIXmlLint.csproj,Program.cs,README.md}` | 编译集加 `Core/Template`；文件系统 resolver |
+| `Tests/EditMode/Lint/DocumentLinterTests.cs` | 6 条 |
+
+验证：EditMode 2256 → 2252 passed / 0 failed / 4 skipped（4 skipped 是 M0 的 red）；EditorOnly 308/308；`dotnet format --verify-no-changes --severity warn` 无输出；CLI 对仓库全部 13 个 `.ui.xml` 仍然零 issue（无回归），对专门造的 fixture 正确报出 3 条并 exit 1。新测试的有效性用「临时摘掉展开遍」验证过：6 条里 4 条转红，另 2 条（去重、无法解析时降级）本就该两边成立。
+
+**尚未做**：§9.4 的 `--theme` 与三条主题规则属于 M2。
+
+### M1 追加：origin 溯源（§9.5）
+
+`ElementNode.OriginSrc` 由 `UIDocumentParser.Parse(xml, src)` 一次性打戳（解析后遍历整份文档，避免把 `src` 穿过十几个私有解析方法），并在展开期的全部 6 个 clone 点逐层传递（`TemplateExpander` ×5 + `StyleMerger.CloneWithoutClass`）。`LintIssue` 增 `Origin`，由 `IRWalker` **集中**打戳 —— 规则一行不用改，新规则自动获得正确归属。
+
+一个不显然的点：`LayoutGroupChildRules` 这类规则在**父节点的帧**里运行却是在说**子节点**，所以不能继承父节点的 origin，那 5 处显式用 `child.OriginSrc`（`LintOriginTests.ChildTargetedRule_IsAttributedToTheChild_NotItsParent` 钉住）。`<Style>` 不是 ElementNode，用它自己已有的 `StyleDef.OriginSrc`。
+
+CLI 端给 import 打戳时用的是**解析出来的磁盘路径**而非 `imp.Src`：`src` 是 resolver key，作者打不开；lookup 键仍用 `imp.Src` 不变。
+
+效果：
+
+```
+$ UIXmlLint uses-tmpl.ui.xml
+tmpl.ui.xml: [PUI-MASK-FRAME-SELF] <Frame id='card'>: mask="self" requires ...
+```
+
+**行号仍然没有**，本次也没做：`LintIssue` 从来就没有行号，`XmlDocument` 的节点默认不实现 `IXmlLineInfo`，要拿到得换一套读取方式。同一个模板被调用多次时，"哪一次调用"也仍不可区分（需要模板调用链，`TextArgs` 有原料但没接）。这两条都留给需要时再说。
+
+验证：EditMode 2262 → 2258 passed / 0 failed / 4 skipped；EditorOnly 308/308；`dotnet format` 无输出；CLI 对仓库 13 个文件仍零 issue；跨文件 fixture 正确指向库文件。有效性用「摘掉模板内联时的 origin 传递」验证：6 条里 3 条转红，失败信息正是这个 bug 本身（`Expected: "skin.ui" But was: "main.ui"`）。
+
+### M2.1 / M2.2（分支 `test/attr-reversibility-red`）
+
+**路线调整（§4.2 / §5 的实现顺序）**：设计里主题 pack 是在**展开期**折进 `class=` 的，M2.3 的运行时重合并再负责后续切换。实现时发现这会有两条路径做同一件事，而且展开期那条拿不到 commons 主题 —— `LoadCommonLibraryAsync` 注册的主题在 `ThemeStore` 里，不在后续某次 `LoadedDoc.Themes` 中。改为：**展开期照旧只合全局 pack，主题层完全由重合并那一步负责**（它本来就要在 Open 时跑一次）。一条路径，`ThemeStore` 是唯一真相源，M2.4 的 `--theme` 也复用同一个函数。
+
+**§4.3 收紧为明确规则**：设计里"主题内 `<Style>` 不参与 `as=` 命名空间"写得含糊。M2.2 先落成 **主题样式只对 `StyleKey(null, name)` 生效**，把带命名空间的样式换肤挂起。**后已放开**，见文末《主题样式认命名空间》—— 那条限制的理由（"主题没有自己的命名空间"）本身就是个误判：主题样式名从来不是一个声明，而是一个**引用**。
+
+产出：
+
+| 文件 | 内容 |
+|---|---|
+| `Runtime/Core/IR/ThemeBlock.cs` | `Styles` 字段 |
+| `Runtime/Core/Parser/UIDocumentParser.cs` | `ParseStylePack` 抽取共用；`<Theme>` 接受 `<Style>`；`ThemeStyleForbiddenAttrs` + 分组理由文案；`StampOrigin` 顺带给 `StyleDef` 打戳 |
+| `Runtime/Application/ThemeStore.cs` · `UI.cs` | 携带主题样式；`Register` 加只有颜色的兼容重载（既有 ~20 处调用点不动） |
+| `Runtime/Core/Template/ThemeStyleResolver.cs` | 有效 pack 折叠：全局当隐式根 → base 链 root-first → 激活主题；按属性名原子；无主题/无主题样式时原样返回不分配 |
+| `Tests/EditMode/Parser/ThemeStyleParsingTests.cs` · `Template/ThemeStyleResolverTests.cs` | 22 + 11 条 |
+
+验证：EditMode 2295 → 2291 passed / 0 failed / 4 skipped；`dotnet format` 无输出；UIXmlLint 13 个文件零 issue。
+
+**剩余**：M2.3（保留 `class` + inline 快照、`ThemeStyleApplier` 重合并、接 Open 与 `Theme.Changed`）、M2.4（三条 lint 规则 + `--theme` + SKILL）。
+
+### M2.3（分支 `test/attr-reversibility-red`）
+
+运行时重合并落地。**实现方式与 §5.1 设计的不同**：设计里是给节点存一份「作者内联属性快照」，重合并时用「快照 ∪ 新 pack」重建。实现时发现那样会**丢掉模板调用点合并到实例根上的公共属性** —— `ExpandInvocation` 在 `StyleMerger` 之后才把 invocation 的 CommonAttrs 写进 `instanceRoot.Attributes`，它们既不在快照里也不在 pack 里。
+
+改为记 `ElementNode.StyleAttrNames`：**上一次 pack 贡献了哪些属性名**。重合并 = 删掉这些名字 → 快照当前剩下的（内联 + invocation 公共属性）→ 铺新 pack。不需要额外的快照字典，一个名字集合就够，而且天然幂等。
+
+其余落地要点：
+
+- **展开产物保留 `class=`**（原来是合并后删掉）。契约变了，`StyleMergeTests` 里三条断言「展开后不含 class」的测试相应改写 —— 真正让这个特性零成本的从来不是删掉 `class`，而是**值已经折成普通属性**，控件与 `ScreenInstantiator` 依旧不知道样式存在。
+- `ExpandInvocation` 要跳过保留下来的 `class`，否则报「unknown attribute 'class'」。
+- **`StyleAttributeView.IsUncertain` 对已合并节点直接返回 false**。否则展开遍看到 `class=` 又会噤声，把 M1 刚拿到的覆盖还回去。实测确认 fixture 里的报错仍然照常触发。
+- 重合并挂在 `Screen.Open` 与 `Screen.ReSolve` 的**开头**，而不是单独的 theme-changed 钩子：它幂等，而 ReSolve 本来就是切主题触发的（`_themeHandler`），一个调用点同时覆盖 resize / Variant / Theme / 首次构建。
+- 两道早退让不用主题样式的工程**一分钱不花**：文档没有 `<Style>`；以及 —— 真正重要的那条 —— `ThemeStore.AnyThemeStyles` 为 false，也就是此特性之前的每一个工程。
+
+实现期抓到的 bug（测试抓的）：`ReMerge` 里判断「节点自己声明过」时查的是**正在被改写**的节点，于是 pack 刚写进去的 base `color` 会让同名的 `color.mobile` 被跳过。`Apply` 查的是合并前的 `src` 所以没这问题。改为先快照 `selfDeclared` 再铺 pack。
+
+**与 §7 的偏离**：设计说调用点 class 的「公共属性那半」可以跟随主题。实现下来**两半都不跟随** —— invocation 节点本身在展开后就不存在了，它的 `class` 无处安放；把它挪到实例根又会和模板体根自己的 `class` 撞车。M2.4 的 `PUI-THEME-STYLE-TEMPLATE-PARAM` 因此要覆盖整个「调用点用 theme-scoped style」的情况，而不只是 Param 那半。
+
+**顺带发现的既有缺口**（与主题无关，未修）：`itemTemplate` 走的是 `InstantiateNode(tpl.Body, ...)`，即**未展开**的模板体 —— 所以 `<Template>` 体内的 `class=` 在被当作 itemTemplate 使用时**从来就没生效过**。重合并没有捎带修它：那些 body 是 `loaded.Templates`（可能就是 commons 池）里共享的原始 IR，就地改写会跨文档泄漏。
+
+产出：`ElementNode.StyleAttrNames`、`StyleMerger.ReMerge` / `ComputePack` / `CloneForMerge`、`Core/Template/ThemeStyleApplier`、`ScreenDef.Styles`、`ThemeStore.AnyThemeStyles` / `ResolveStyles`、`Screen.ReMergeThemeStyles`，加 `Tests/EditMode/Application/ThemeStyleSwitchTests.cs`（8 条）。
+
+验证：EditMode 2303 → 2299 passed / 0 failed / 4 skipped；EditorOnly 308/308；`dotnet format` 无输出；UIXmlLint 仓库 13 个文件仍零 issue，fixture 的跨 import / class 供给报错全部照常。
+
+### M2.4（分支 `test/attr-reversibility-red`）
+
+lint 规则 + SKILL。三处与设计不同：
+
+**1. `PUI-THEME-STYLE-IF-PARAM` 取消。** M2.3 之后它**永远不可能触发**：`if` 在样式黑名单里（普通节点走不通），而唯一的 Param 通道是模板调用点 —— 那已经被 `PUI-THEME-STYLE-ON-INVOCATION` 整个盖住（M2.3 的偏离让这条规则从「只管 Param 那半」扩到了「调用点上的 theme-scoped class 一律不跟随」）。写一条永远不响的规则是负债，不写。
+
+**2. `--theme` 不做成 flag。** 既然主题层是「展开后重合并」，CLI 直接**对文档声明的每个主题各走一遍展开树并去重** —— 不用作者记参数，主题改不动的东西也不会多出输出。`ThemeStyleRulesTests.ProblemVisibleOnlyUnderOneTheme_IsStillFound` 钉住：只在某一个皮肤下才成立的 `sprite` on `<VStack>`，单看一个状态会整个漏掉。
+
+**3. 新增第三条规则 `PUI-THEME-STYLE-NO-BASELINE`。** 写测试时才发现设计没想清楚的一个点：**只在主题里声明、没有全局对应的样式，`class=` 根本引用不到** —— 展开期只认全局池，会抛 unknown style，而那条信息没法提到它其实写在哪个 `<Theme>` 里。这个行为本身是对的（全局样式当基线正是 §6.1 成立的前提），缺的是可操作的诊断。顺带把主题规则移到了**尝试展开之前**，否则展开失败会把它们整个短路掉。
+
+规则位置：`ThemeStyleRules` 是 `internal`（其余规则类都是 public）—— `StyleKey` 是 internal，为了给一个 lint 参数标类型就把它提到公共 API 是本末倒置；消费者只有 `DocumentLinter` 和测试。
+
+产出：`Runtime/Core/Lint/ThemeStyleRules.cs`（三条规则）、`DocumentLinter` 接入 + 逐主题走查、`Tests/EditMode/Lint/ThemeStyleRulesTests.cs`（12 条）、`authoring-promptugui-xml/SKILL.md` 新增 **Theme-scoped styles** 一节 + 顶层元素表 + lint 速查、`scripting-promptugui-csharp/SKILL.md` 的 `UI.Theme.Set` 说明。
+
+验证：EditMode 2315 → 2311 passed / 0 failed / 4 skipped；`dotnet format` 无输出；UIXmlLint 仓库 13 个文件仍零 issue，themed fixture 上 SHAPE 与 ON-INVOCATION 两条都正确触发。
+
+---
+
+### M2.5 —— §8 的可逆性修复（`[Ignore]` 全部摘掉）
+
+三处 A 类缺陷与 C 类覆盖缺口一并修完，四条 red test 转绿。**三个修复是同一个形状**：把「一次性设置」改成「从当前声明**算出来**」。
+
+| 处 | 改法 |
+|---|---|
+| `Tab.selectedSprite` | 新增 `ReconcileTransition()`：`transition = (reactor 存在 ‖ selectedSprite 存在) ? None : ColorTint`，由 setter 与 `OnAfterApply` 共用 |
+| `Btn.pressedSprite` / `disabledSprite` | 同形。**不在 red test 覆盖范围内，但一起修了** —— 一模一样的缺陷（原注释自己写着 "Set-only"），只修 Tab 没有道理 |
+| `Progress.bg` / `frame` | 新增 `_bgSprite/_bgColor/_frameSprite/_frameColor` 四个标志，图层显隐由 `ReconcileLayers()` 从标志算出 |
+| `RawImage` mask 家族 | 新增 `MaskAttributeRules.CheckRawImage` + `IRWalker` 分发（不能复用 `CheckImage`：RawImage 没有 `sprite=`，`PUI-MASK-SELF-NO-SPRITE` 不适用） |
+
+`Progress` 的改法顺带修掉一个**没人注意到的既有 bug**：`bg` 与 `bgColor` 两个 setter 都在 `SetActive(true)`，而 `ControlAttributeApplier` 遍历属性的顺序来自 `HashSet`，**未定义**。改成从两个标志一起算之后，谁先谁后都一样。
+
+`PUI-PROG-MASK-VARIANT` 的文案说 "other attrs (value / fill / **bg** / mode / direction) are safe in variants" —— 修完 `bg` 之后这句**变成真的了**，不用改。
+
+测试抓到一次回归：可见性搬进 `OnAfterApply` 之后，运行时从 C# 直接赋值 `progress.Bg` 不再触发它。因为答案是从标志算出来的，setter 里直接调 `ReconcileLayers()` 就行 —— 顺序无关，这正是这种写法的好处。
+
+另加两条测试：`Btn` 的对应用例，以及一条守卫 —— **有 `selectedColor` 时清掉 `selectedSprite` 必须保持 `None`**（reactor 仍然在管 bg，交还 ColorTint 会双重着色）。
+
+SKILL：`reference/states.md` 补「ColorTint 的切换是算出来的，可逆」；`reference/controls-progress.md` 新增「bg / frame 图层的显隐」一节。
+
+验证：EditMode **2317/2317**、PlayMode **171/171**、EditorOnly **308/308**，全部 0 failed **0 skipped**；`dotnet format` 无输出；UIXmlLint 13 个文件零 issue。
+
+---
+
+## 16. 现状小结
+
+M0 / M1 / M2 全部落地，§8 的可逆性缺陷全部修完，测试套件无 skipped。§9.4 的 `--theme` 以「自动逐主题走查」代替，§6.2 的规则取消（见 M2.4）。
+
+仍然开着的：
+
+（无。M3 与「带命名空间的样式不能被主题覆盖」都已关闭 —— 前者不做、后者已放开，各见下。）
+
+M3 已关闭，不再是待办：
+
+### M3 关闭：调用点的 class 不跟随主题，`PUI-THEME-STYLE-ON-INVOCATION` 转正
+
+§14 列的 M3（"§7 的 raw + args 重替换，去掉 `PUI-THEME-STYLE-TEMPLATE-PARAM`"）**不做**。它的设计前提在 M2.3 实施时就塌了一半，重新评估下来代价与收益完全不成比例：
+
+1. **要做的已经不是原来那件事。** §7 认为调用点 class 的「公共属性那半」自动就跟随（`ExpandInvocation` 拷到实例根）。实测**两半都不跟随** —— invocation 节点展开后不存在，它的 `class` 无处安放。M3 因此不是"补上 Param 那半"，是两半都要新建机制。
+
+2. **§7 说的「走 i18n 同一条路」不成立。** `ControlAttributeApplier.cs:73-79` 的 raw + args 重替换**只对 `text` 一个属性开**，还要 `tr` 打开。任意属性的重替换是新机制，不是复用。这是 §7 里最乐观的一句，它是错的。
+
+3. **它会把一条已取消的规则请回来。** M2.4 取消 `PUI-THEME-STYLE-IF-PARAM` 的唯一理由是 `ON-INVOCATION` 整个盖住了它。一旦调用点能跟随主题，主题就能改 Param，Param 就能喂 `if=` → 换主题变成**结构**变化 → 要重建 GameObject。这正是「Variants / Theme 不重建 GameObject」一直在躲的东西。
+
+4. **它需要一条 spec 从没定过的优先级**：实例根上同时存在「调用点的 class」与「模板体根自己的 class」时，谁覆盖谁。
+
+5. **workaround 不是将就，是更对的写法，而且有绿测试钉着。** 把 `class=` 下沉到模板体内的节点上 —— `DynamicSubtreeReSolveTests.BoundRow_RepaintsOnAThemeSwitch`、`ThemeStyleSwitchTests` 一整组就是这个形状。lint 报错本身就带着这句指引。
+
+真正剩下的口子只有一个：第三方 commons 模板体内没写 `class=`、又想从调用点给它换皮。窄，且可由库作者补一个 `class` 解决。
+
+`PUI-THEME-STYLE-ON-INVOCATION` 因此从"临时闸门"转正为**永久约束**，§7 的表格与说明随之订正。
+
+### 追加：`itemTemplate` 走完整展开
+
+`ScreenDef.Templates` 原本存的是 `loaded.Templates` 的**原始 body**，而 `ScrollList` / `TabBar` / `Carousel` 直接拿它实例化。展开该做的事一件都没做：`class=` 没合并、`{{param}}` 没替换、嵌套模板调用没内联。
+
+**症状比记录的严重，也和记录的不同。** 实测（`slots=0` + 控制台）：后两者会在 bind 内部抛（`unregistered tag 'Inner'`、`unknown color token "{{tint}}"`），但 R3 把异常路由给未处理异常处理器 —— 调用方**正常返回，列表是空的**，控制台那条错误既不提列表也不提模板。不是「静默不生效」，是「空列表 + 一条指不到现场的日志」。
+
+改法：`TemplateExpander` 增 `BuildRuntimeTemplates`，用模板自己的 `<Param>` 默认值当实参预展开一份，存进 `ScreenDef.Templates`。
+
+三个必须做对的点：
+
+1. **有必填 `<Param>` 的模板不能急切展开** —— 它们可能只作普通调用用、从不当 itemTemplate，展开会把今天能跑的工程炸掉。这类保留 body 原样；真被用作 itemTemplate 时由 `ItemTemplateGuard` 在 `Open` 处报错说清楚是哪个模板的哪个参数。展开抛异常（如循环引用）同样回退，保证**不新增任何 load 期失败**。
+2. **每个条目都是 ScreenDef 自己拥有的副本**（必填 Param 那类走 `DeepClone`），不是共享的（可能来自 commons 池的）`TemplateDef`。这正是让切主题能就地重算这些 body 而不跨文档泄漏的前提 —— M2.3 当时拒绝碰它们的理由随之消失，`ThemeStyleApplier` 现在也走 `def.Templates`。
+3. **`BodyExpanded` 标志**：保留原样的 body 里 `class="{{skin}}"` 还是占位符，拿它查样式会抛 `unknown style '{{skin}}'`。这个是**回归跑 CLI 时崩出来的**（exit 134，正好是自带 ProceduralStyle 样例的形状），运行时同一条路也会崩。顺带给 `DocumentLinter` 的逐主题重算加了 try/catch —— lint 工具不该被它正要诊断的 markup 弄死。
+
+**顺带查实、未修**：`_dynamicSubtrees` 在 `Screen` 里只被 `ApplyScalesTo` 和 `HasFactorScaleNode` 用到，`ControlAttributeApplier.Apply` 只在实例化时对它们跑过一次 —— 也就是说 **`BindItems` 出来的行，切主题 / 切 Variant / resize 都不会重放属性**，连颜色 token 都不跟随。这在今天就成立，是比 `class=` 更大的一条，独立于本次修复（原分析里的 1-B）。本次修复让**之后新绑的行**拿到当前皮肤，已绑的行仍需要 1-B。
+
+验证：EditMode 2323/2323、PlayMode 171/171、EditorOnly 308/308，0 failed 0 skipped；`dotnet format` 无输出；UIXmlLint 13 个文件零 issue、exit 0。
+
+### 追加：lint 的源位置（行号 + 调用点）
+
+M1 里我判断「要拿到行号得换一套读取方式」，那个结论偏保守 —— 确实不用重写 parser。`XmlDocument.Load(XmlReader)` 在读到元素时才调 `CreateElement`，此刻 reader 正停在该元素上，所以一个 `XmlDocument` 子类 + 一个记住位置的 `XmlElement` 子类就够，**零参数穿透**（`ParseElement` 本来就拿着那个 `XmlElement`）。把 700 行 `XmlElement` 代码搬到 `XDocument` 换同样的信息是不划算的。
+
+`ElementNode.Line` 跟着 `OriginSrc` 走同样的展开传递路径。输出变成 `file:line: [CODE] msg`。
+
+**第二半：同一模板多次调用。** `ElementNode.InvokedAt` 记「产生这个节点的模板调用点」，`ExpandInvocation` 在实例根子树上打戳。关键决定是**覆盖而非填空**：嵌套调用先展开、先打了戳，但内层调用点对每个实例都一样、区分不了；最外层最后跑，覆盖后正好是能区分实例的那个。输出里声明点仍是主位（改代码去那儿），调用点作为 `(via file:line)` 补在后面。
+
+```
+multi.ui.xml:4: [PUI-MASK-FRAME-SELF] <Frame id='a'>: mask="self" … (via multi.ui.xml:7)
+multi.ui.xml:4: [PUI-MASK-FRAME-SELF] <Frame id='b'>: mask="self" … (via multi.ui.xml:8)
+```
+
+**顺带**：有了精确的 `origin:line` 身份，CLI 改成**跨入口文件去重**。之前 lint 一个目录时，库和 import 它的文档各作为入口跑一次，同一个缺陷会打两遍（实测 7 → 6）。
+
+验证：EditMode 2329/2329、EditorOnly 308/308，0 failed 0 skipped；`dotnet format` 无输出；UIXmlLint 仓库 13 个文件零 issue。
+
+### 追加：动态子树参与 ReSolve 的属性重放
+
+修 `itemTemplate` 时查实的那条：`BindItems` 建出来的行在实例化后就冻住，不跟 Variant、不随主题重绘、resize 不重解算。
+
+**根因不是 ReSolve 漏了它们，是它们压根没进那张表。** `RegisterDynamicSubtree` 有一句 `if (!hasScale) return;` —— `_dynamicSubtrees` 当初只为 `ApplyScales` 服务，所以**只登记声明了 `scale` 的子树**。典型的列表行一个都不在里面。把列表语义从「需要重算 scale 的子树」拓宽成「所有活着的动态子树」，再加 `ReSolveDynamicSubtrees()`。
+
+**代价是实打实的，测了：**
+
+| 行数 | resize 路径 | 状态路径（Variant / 主题） |
+|---|---|---|
+| 50 | 0.02 ms | 6.1 ms |
+| 200 | 0.08 ms | 86.3 ms |
+| 500 | 0.16 ms | 506.2 ms |
+
+超线性，还是 LayoutGroup 那个 O(N²)（行都在 ScrollList content 的 VerticalLayoutGroup 里）。500 行单次重放半秒，不能无条件跑。
+
+**所以 `ReSolve(bool replayDynamicSubtrees = true)` 按原因分流**：窗口 resize 传 `false` —— 行所依赖的状态并没有变（它对画布尺寸的依赖只有 `scale="Nx"` / `<r>r`，那由 `ApplyScales` 单独处理且照常跑），而 resize 是成串到来的。转屏仍然能到达行，因为那是切 Variant，走状态路径。resize 因此从「将要 554 ms」变成 **0.16 ms**。
+
+**一个反直觉的交互，测试抓的**：`ApplyScalesTo` 的 `dynamicBaseline` 我一开始改成了 `false`（理由是 `ApplyCommon` 现在会重跑）。`BindItems_card_box_preserving_does_not_accumulate_across_resizes` 立刻红了（-0.5 → -2.5，补偿累积 5 次）—— 因为 **resize 路径恰恰跳过了重放**，`ApplyCommon` 并没有跑，那份捕获基线仍然是让 resize 幂等的唯一依靠。退回 `true`：真跑过 `ApplyCommon` 的地方，基线是同一个几何，还原上去是 no-op。
+
+**遗留**：500 行的列表切一次 Variant 仍要半秒。`ScrollList` 不做虚拟化（一条数据一个 slot），这种规模本身就有别的问题；真正的解法是 LayoutGroup 的 O(N²)，独立一条。（**见文末追加：稳态那一半已修；真改尺寸那一半剩 Unity 自身单次 mark 的 O(N)。**）
+
+验证：EditMode 2334/2334、PlayMode 171/171、EditorOnly 308/308，0 failed 0 skipped；`dotnet format` 无输出；UIXmlLint 13 个文件零 issue。
+
+### 追加：LayoutGroup 里的 ReSolve —— 那个 O(N²) 的真身
+
+§2 顺带记的那条（"二次项来自 LayoutGroup 的重复 rebuild，与程序化属性无关"）**归因错了**。二次项确实全在 LayoutGroup 一侧，但按下扳机的是**我们自己的写法**。
+
+`ApplyLayoutElement` 里有一句 LGC-D10 的注释——"每次都先把两轴全置 -1，清掉前一次 Variant 的残留约束"。代码照做：先把六个属性写成 -1，再写真值。
+
+而 `LayoutElement` 的 setter 自带 change guard：
+
+```csharp
+public virtual float preferredWidth {
+    set { if (SetPropertyUtility.SetStruct(ref m_PreferredWidth, value)) SetDirty(); }
+}
+protected void SetDirty() {
+    if (IsActive()) LayoutRebuilder.MarkLayoutForRebuild(transform as RectTransform);
+}
+```
+
+**"先置 -1 再写回"恰好把这个 guard 绕开了**：值明明一个没变，每个属性却变了两次。稳态 ReSolve 因此每节点白脏约 6 次，而单次 `MarkLayoutForRebuild` 一点都不便宜（下面有数）。
+
+**修法**：六个值先算进局部变量，最后一次性写（`WriteLayoutElement`）。-1 基线仍在，只是活在局部变量里——LGC-D10 / LGC-D17 的语义一字未动，`Variant_switch_from_size_to_stretch_resets_minWidth` 那类测试照绿。
+
+**稳态 ReSolve（值一个没变）：**
+
+| N | 改前 | 改后 | |
+|---|---|---|---|
+| 100 | 6.32 ms | **0.23 ms** | 27× |
+| 200 | 22.77 ms | **0.47 ms** | 48× |
+| 400 | 87.03 ms | **0.65 ms** | 134× |
+| 800 | — | 1.30 ms | |
+
+每节点 2.3 / 2.3 / 1.6 / 1.6 μs —— **平的**。稳态下的二次项没了。
+
+§15 那个反直觉的分组实验（400 个节点拆成 1/4/10/20/40 组，67 → 97 ms，越碎越慢）也一起消失：0.72 / 0.71 / 0.75 / 0.76 / 0.77 ms。那份"深度敏感"完全来自 `MarkLayoutForRebuild` 的父链上溯；不脏了，也就不敏感了。
+
+**剩下的：值真的变了的时候**
+
+| N | width 变体翻转 | color 变体翻转 | width 变但 LayoutGroup 被销毁 |
+|---|---|---|---|
+| 100 | 1.34 ms | 0.41 ms | 0.20 ms |
+| 200 | 3.88 ms | 0.80 ms | 0.41 ms |
+| 400 | 14.13 ms | 1.57 ms | 0.83 ms |
+
+只有走 LayoutElement 的那条超线性；不碰布局的属性（color）和摘掉 LayoutGroup 后都是线性的。
+
+固定 N=400、只让前 M 个节点变：1.86 / 2.55 / 4.36 / 8.06 / 15.57 ms（M=25/50/100/200/400）——对 M **完全线性**，约 37 μs 一个；但每个改动节点的代价随 N 涨（13.4 → 19.4 → 38.9 μs）。所以准确说是 **O(N × M)**（N=布局根子树大小，M=真正改值的节点数）；整表换皮时 M=N，才表现为 N²。
+
+**这一段是 Unity 自己的**，纯 uGUI 微基准（完全不碰 PromptUGUI）复现：
+
+| 布局根子树 | `MarkLayoutForRebuild`×N | 每次 | 写**新**值×N | 写**同**值×N |
+|---|---|---|---|---|
+| 100 | 0.35 ms | 3.5 μs | 0.37 ms | 0.000 ms |
+| 200 | 1.32 ms | 6.6 μs | 1.35 ms | 0.001 ms |
+| 400 | 5.16 ms | 12.9 μs | 5.15 ms | 0.002 ms |
+| 800 | 20.07 ms | 25.1 μs | 20.03 ms | 0.004 ms |
+
+写新值 ≈ 纯 Mark（setter 的开销就是那次 mark）；写同值 ≈ 0（guard 完全有效——上面的修法就是靠它）。固定 50 次调用、只变兄弟数：2.1 / 3.4 / 6.2 / 12.1 / 23.8 μs，单次 mark 严格 O(布局根子树大小)。
+
+**拆小组不是解法**（纯 Unity 复现）：400 个节点全改，1/4/10/20/40 组 → 5.13 / 5.51 / 6.19 / 7.16 / 8.69 ms。嵌套只是把布局根推得更外，还多付上溯。
+
+**已测量、未实施的后续**：写这批值之前 `layoutGroup.enabled = false`，写完 `= true`。关掉后子节点的 mark 找不到有效的父布局组、各自成根（便宜），重新启用时 `LayoutGroup.OnEnable` 统一脏一次。
+
+| N | 直接写 | 关组再写 | |
+|---|---|---|---|
+| 200 | 1.26 ms | 0.15 ms | 8.3× |
+| 400 | 5.03 ms | 0.30 ms | 16.8× |
+| 800 | 19.93 ms | 0.58 ms | 34.1× |
+
+线性（0.75 μs/节点），队列里仍然只留 1 条。代价是 ReSolve 期间 LayoutGroup 处于禁用态——嵌套布局组、`OnDisable` 自己也会脏一次、以及这中间别的代码观察布局的可能性，都得先想清楚。**独立一条，不在本次范围内。**
+
+**§15 那张列表表格重测**（`ScrollList` 绑定行，行都在 content 的 `VerticalLayoutGroup` 里）：
+
+| 行数 | 状态路径 改前 | 状态路径 改后 | | resize 路径 |
+|---|---|---|---|---|
+| 50 | 6.11 ms | **0.22 ms** | 28× | 0.01 ms |
+| 200 | 86.31 ms | **0.87 ms** | 99× | 0.05 ms |
+| 500 | 506.23 ms | **2.16 ms** | 234× | 0.11 ms |
+
+每行 4.4 / 4.4 / 4.3 μs —— 线性。§15 那条"500 行切一次 Variant 仍要半秒"的遗留就此关掉：`ReSolve(replayDynamicSubtrees: false)` 那道 resize 闸门仍然值得留着（它省的是另一笔），但它不再是唯一挡在半秒面前的东西。
+
+**契约测试**：`LayoutRebuildDirtyTests` 拿 `CanvasUpdateRegistry` 的布局队列做 seam（它按 layout root 去重，所以读的是"有没有脏"而不是"脏了几次"——后者才是契约）。三条：稳态 ReSolve 必须一次不脏；自由定位父节点作对照（本来就不脏，是它点出了元凶）；真改尺寸必须照常脏，否则"便宜"就只是"坏了"。
+
+验证：EditMode 2337/2337、PlayMode 171/171、EditorOnly 308/308，0 failed 0 skipped；`dotnet format --verify-no-changes --severity warn` 无输出。
+
+### 追加：主题样式认命名空间（§4.3 的限制放开）
+
+M2.2 把 §4.3 收紧成"主题样式只对 `StyleKey(null, name)` 生效"，理由写的是「主题没有自己的命名空间去匹配 `StyleKey("ui", name)`」。**这个理由本身是个概念错位**：主题的 `<Style name>` 从来不是一个*声明*，它是一个**引用** —— 跟 `class="ui:card"` 是同一个东西。既然引用侧本来就认命名空间，主题也该认。
+
+而且这条限制正好挡住了最想要它的场景：**从别处 import 进来的皮肤库，恰恰是最需要换肤的那一份**。库的作者管不到你的主题，你也改不了库的文件。
+
+放开后：
+
+```xml
+<Theme name="pixel">
+  <Style name="ui:card" radius="0" borderWidth="2"/>   <!-- 覆盖 <Import as="ui"> 带进来的那份 -->
+  <Style name="card"    radius="0"/>                   <!-- 另一个样式：本文档自己的 -->
+</Theme>
+```
+
+命名空间是身份的一部分，两者永不互相折叠（`ABareThemeStyle_DoesNotReachItsNamespacedNamesake` 钉住）。
+
+**顶层 `<Style>` 仍然只能写裸名**，而且现在是显式 parse error 而不是被 kebab 正则顺带拒掉——它的命名空间来自导入方的 `as=`，不来自它给自己写的名字；写了冒号只会产生一个谁都寻址不到的包，所以报错要说清命名空间到底从哪来。
+
+改动很小，因为**键的类型没动**：`ThemeBlock.Styles` 仍是 `Dictionary<string, StyleDef>`（`StyleKey` 是 internal 而 `ThemeBlock` 是 public，换键类型会撞可见性，跟 `ThemeStyleRules` 当初那个问题同源）。冒号只在**解析边界**上被认出来：
+
+| 处 | 改动 |
+|---|---|
+| `UIDocumentParser.ParseStylePack` | 新增 `allowNamespace`，主题侧传 true；新增 `ValidateStyleName`（两半各自 kebab） |
+| `ThemeStyleResolver.Resolve` | `new StyleKey(null, kv.Key)` → `StyleKey.ParseReference(kv.Key)` |
+| `ThemeStyleRules.CheckBaselines` / `CheckShape` | 同上 |
+| `ThemeStyleRules.CheckInvocations` | 删掉「带命名空间的一律跳过」那条，改为按原样比对 |
+
+### 追加：状态色控件的基色也要可逆（§8 家族里漏掉的第四处）
+
+做农场/玻璃示例时撞出来的：**声明了任何 `*Color` / `*Modulate` / `selectedColor` 的控件，它自己的 `color=` 就再也换不动了。** 玻璃主题给 `<Btn class="btn">` 换了整包属性，`sprite` 换了，`color` 纹丝不动。
+
+跟主题无关，是既有 bug：纯 Variant 一样卡住。
+
+```xml
+<Btn color='#E8D2A8' color.alt='#112233'/>                    <!-- .alt → #112233 ✓ -->
+<Btn color='#E8D2A8' color.alt='#112233' hoverColor='#F5E6C8'/> <!-- .alt → 仍是 #E8D2A8 ✗ -->
+```
+
+**根因**：`StateTintReactor` 的基色是**从图上 Peek 出来的，且只 Peek 一次**。`ControlAttributeApplier` 写完新 `color`，紧接着 `OnAfterApply` → `Configure` → `OnState` 用那份陈旧的 `_baseColor` 原样盖回去。
+
+只 Peek 一次的理由是对的，注释里写着：重新 Configure 时若再 Peek，悬停中的图上是 **tint**，会把 hover 色永久烙成基色。所以修法不是"多 Peek 几次"，而是跟 M2.5 那三处同形 —— **从当前声明推，不从像素快照推**：控件的 `Color` setter 把值存下来，`OnAfterApply` 连同 `selectedColor` 一起交给 `StateTintInstaller`（`authoredBase:` 具名参数）。没声明 `color=` 的图（控件自带底、只吃 modulate 扩散的后代）照旧 Peek 兜底。
+
+`AReApplyWhileHovered_DoesNotPromoteTheTintIntoTheBase` 钉住那条原始理由 —— 它必须一直绿，否则就是拿一个 bug 换另一个。
+
+**顺带踩到并修掉的第二处**：`_bornFrame` 的时间戳原本挂在 `!_baseCaptured` 那个分支里。声明了 `color=` 的控件进来时 `_baseCaptured` 已经是 true，戳就没盖上 → 首帧 snap 判定失效 → `isOn="true"` 的 Tab 不再瞬间显示 `selectedColor`，而是去起一个 EditMode 里永远不推进的 tween。**全套 2342 个测试一个都没抓到**，因为状态测试统统开着 `TestForceInstant`，它会短路掉 BornFrame 判断；是拿真实示例跑 execute_code 才看见的。补了 `StateBornFrameTests.AnAuthoredBase_StillStampsTheBornFrame`（那个类的 `TestForceInstant` 恒为 false，正是为这条留的口子）。
+
+验证：EditMode 2348/2348、PlayMode 171/171、EditorOnly 308/308，0 failed 0 skipped；`dotnet format --verify-no-changes --severity warn` 无输出；UIXmlLint 对 `Runtime/Resources/` 与改写后的示例文档均零 issue。示例的 `CommonControlsRunner.cs` 不在任何编译集里（`Samples~` 对 Unity 与 lint 都不可见），改完用 Roslyn 对着宿主工程实际加载的程序集单独编了一遍：0 error。
+
+### 追加：两条会误报的 lint 规则（示例撞出来的）
+
+`PUI-PROG-NO-FILL` 和 `PUI-MASK-SELF-NO-SPRITE` 都是「属性 A 写了，但它需要的 B 不在」这种**报缺失**的形状 —— 而它们读的是 `ElementNode.Attributes`，看不见 `class=` 带进来的东西。于是：
+
+```xml
+<Style name="prog" fillColor="#58A63C"/>
+<Progress class="prog" value="0.4"/>   <!-- 误报 PUI-PROG-NO-FILL -->
+
+<Style name="pane" sprite="ui:panel"/>
+<Image class="pane" mask="self"/>      <!-- 误报 PUI-MASK-SELF-NO-SPRITE -->
+```
+
+两遍走查也救不回来：raw 遍看不见 pack、判它有问题，expanded 遍看得见、判它没问题，而 `DocumentLinter` 按 issue 去重 —— raw 遍的结论照样输出，CLI 于是给一个非零 exit code。**报缺失的规则必须走 `StyleAttributeView`**（`GlassRules` 一直是这么做的，它的类注释里就写着理由："a rule blind to styles reports a correct layout as broken"），只是这两条当初没接上。
+
+接上之后：解析不到的 class 让节点变成 `IsUncertain` → 闭嘴；解析得到、且 pack 里确实没有那个属性 → 照常报。`DocumentLinterTests` 三条钉住（两条不该报、一条该报）。
+
+**同一形状的其余规则**（`CarouselRules` 的无尺寸、`ImageFitRules`）没有误报，因为它们检查的属性要么不常写进样式包，要么本来就走 `VariantOverrides` 一起判。真要普查得逐条过一遍，不在本次范围。
+
+### 追加：内置控件上写错属性名是静默的
+
+改示例时写了 `<ScrollList scrollbarSprite="none">`，运行期什么都没发生 —— `ScrollList.ScrollbarSprite` 的 XML 名其实是 **`scrollbar`**（`[UIAttr(IsSprite)]` 会剥掉尾部 `Sprite`，好让它和 `<Dropdown scrollbar=>` 对齐）。`ControlAttributeApplier` 对认不出的属性名是 `continue`，parser 不管（它不知道控件有哪些属性），lint 也不管（`Core/Lint` 是纯 C#，反射不到 Unity 侧的控件）。
+
+现有的出口是 XSD 生成器（IDE 里补全 + 校验）。要让 CLI 也能查，得把「标签 → 属性名」这张表生成到 `Core/Lint` 能读的地方 —— 独立一条，不在本次范围。
+
+验证（追加轮）：EditMode 2351/2351、PlayMode 171/171、EditorOnly 308/308，0 failed 0 skipped；`dotnet format` 无输出；UIXmlLint 零 issue。示例的两套皮逐层核对：33 个内层图，28 层随主题变化并完整往返，剩下 5 层本来就不可见（stencil mask 源、未启用的 Progress frame、透明 viewport）。

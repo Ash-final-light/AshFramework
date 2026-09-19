@@ -1,0 +1,385 @@
+using PromptUGUI.Application;
+using PromptUGUI.Controls.Internal;
+using PromptUGUI.IR;
+using PromptUGUI.Layout;
+using PromptUGUI.Parser;
+using PromptUGUI.Registry;
+using UnityEngine.UI;
+
+namespace PromptUGUI.Controls
+{
+    public sealed class Frame : Control
+    {
+        // 默认无视觉、纯 RectTransform 容器；可选 RectMask2D（mask="rect"）。
+        // 作者写了任一程序化视觉属性（color / radius / border* / glow*）时才 lazy 挂
+        // ProceduralPanel —— 没写就一个 Graphic 都不挂，行为与历史完全一致、零成本。
+        private RectMask2D _rectMask;
+        private UnityEngine.UI.Mask _stencilMask;
+        private string _pendingMaskPadding;
+        private string _maskMode;
+        private bool? _pendingShowMask;
+        private ProceduralPanel _panel;
+        private GlassGroupPanel _group;
+        private float _seam = GlassAttrParser.DefaultSeam;
+
+        private ProceduralPanel Panel => _panel ??= GameObject.AddComponent<ProceduralPanel>();
+
+        // DSS-D13: Frame 没写 anchor 时，按 size 是否存在分轴决定 stretch 或 top/left。
+        // 镜像 CSS 块流默认：未约束的轴 fill 父容器，约束的轴用作者写的值。
+        protected override AnchorPreset GetDefaultAnchor(SizeSpec sizeSpec)
+            => new(
+                sizeSpec.HasHeight ? AnchorVertical.Top : AnchorVertical.Stretch,
+                sizeSpec.HasWidth ? AnchorHorizontal.Left : AnchorHorizontal.Stretch);
+
+        /// <summary>
+        /// <c>rect</c> = RectMask2D（直角裁剪，便宜、可合批）；<c>self</c> = stencil
+        /// <see cref="UnityEngine.UI.Mask"/>，把子内容裁成本 Frame 自绘的那个 SDF 形状 ——
+        /// 圆角头像 / 圆角滚动区就是这么来的。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Mask
+        {
+            set
+            {
+                _maskMode = value;
+                ReconcileMask();
+            }
+        }
+
+        /// <summary>
+        /// <c>mask="self"</c> 时遮罩源自身画不画。<c>false</c> = 只写 stencil 不出颜色，
+        /// 也就是一个隐形的圆角裁剪器。默认 <c>true</c>（作者画了面板，别让它凭空消失）。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string ShowMask
+        {
+            set
+            {
+                _pendingShowMask = bool.Parse(value);
+                if (_stencilMask != null)
+                    _stencilMask.showMaskGraphic = _pendingShowMask.Value;
+            }
+        }
+
+        [UIAttr, Preserve]
+        public string MaskPadding
+        {
+            set
+            {
+                _pendingMaskPadding = value;
+                if (_rectMask != null)
+                    _rectMask.padding = MaskPaddingParser.Parse(value);
+            }
+        }
+
+        /// <summary>
+        /// <c>mask=</c> 是一个属性、两套实现，而且它可能先于它依赖的属性到达 ——
+        /// <c>ControlAttributeApplier</c> 遍历的是 HashSet，<c>mask</c> 完全可能排在 <c>radius</c>
+        /// 前面。所以 setter 和 <see cref="OnAfterApply"/> 都调这里，并且**从当前声明推、不latch**
+        /// （spec §8），ReSolve 重放因此是幂等的。
+        ///
+        /// <para><c>self</c> 需要本节点上有 Graphic：uGUI 的 <c>Mask</c> 要的是 <c>Graphic</c> 而不是
+        /// <c>Image</c>，所以懒挂的 <see cref="ProceduralPanel"/> 正好够用。什么都不画的 Frame 没有
+        /// Graphic，weld 承载者的融合面在 <c>GlassWeld</c> 子节点上、自身那块还被 suppress 了 ——
+        /// 两种情况下挂 Mask 都会把子内容全裁没，所以这里干脆不挂（lint 两条都报）。</para>
+        /// </summary>
+        private void ReconcileMask()
+        {
+            if (_maskMode == "rect")
+            {
+                _rectMask ??= GameObject.AddComponent<RectMask2D>();
+                _rectMask.enabled = true;
+                if (!string.IsNullOrEmpty(_pendingMaskPadding))
+                    _rectMask.padding = MaskPaddingParser.Parse(_pendingMaskPadding);
+                DisableStencilMask();
+                return;
+            }
+
+            if (_rectMask != null) _rectMask.enabled = false;
+
+            if (_maskMode == "self" && _panel != null && !_panel.IsSuppressed)
+            {
+                _stencilMask ??= GameObject.AddComponent<UnityEngine.UI.Mask>();
+                _stencilMask.enabled = true;
+                _stencilMask.showMaskGraphic = _pendingShowMask ?? true;
+                // 面板必须知道自己在当遮罩源：它可以什么都不画（无填充的隐形圆角裁剪器），
+                // 但 stencil 是它的 fragment 写的，被当成"不可见"剔掉几何就等于把子内容全裁没。
+                _panel.SetMaskSource(true);
+                return;
+            }
+
+            DisableStencilMask();
+        }
+
+        private void DisableStencilMask()
+        {
+            if (_stencilMask != null) _stencilMask.enabled = false;
+            if (_panel != null) _panel.SetMaskSource(false);
+        }
+
+        /// <summary>
+        /// 这块 Frame 接不接指针。默认不接：画了东西也穿透（spec 2026-09-15 §3 —— 命中是声明出来的，
+        /// 不是画出来的）。要挡住背后的东西，就在面板的<b>根</b>上写 <c>true</c>：祖先永远画在后代下面，
+        /// 遮不住自己的交互子级，子级空白处的点击沿父链找不到 handler 就被吞掉。
+        ///
+        /// <para>没有任何视觉属性的 <c>&lt;Frame raycastTarget="true"&gt;</c> 是一块透明 catcher：挂面板但不出
+        /// 几何（<c>ComputeVisible()</c> 为 false），零 overdraw —— 代替 <c>&lt;Image color="#0000"&gt;</c> 那种 hack。
+        /// <c>false</c> 不懒挂面板：一块什么都不画的 Frame 本来就没有 Graphic，不必为了「不接」造一个出来。</para>
+        /// </summary>
+        [UIAttr, Preserve]
+        public bool RaycastTarget
+        {
+            set
+            {
+                if (value) Panel.SetRaycastTarget(true);
+                else if (_panel != null) _panel.SetRaycastTarget(false);
+            }
+        }
+
+        // Cleared per pass (same rule as ProceduralSurface.BeginPass): a variant-only
+        // raycastTarget.mobile must turn off again when the variant leaves, and a setter that does
+        // not run is the only signal that the attribute is gone.
+        internal override void OnBeforeApply()
+        {
+            if (_panel != null) _panel.SetRaycastTarget(false);
+        }
+
+        /// <summary>
+        /// 填充色。支持 theme token / hex / CSS 命名色 / <c>/alpha</c> 后缀，以及逗号双色
+        /// （上→下纵向渐变），与其它控件的 <c>color</c> 走同一套解析。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Color
+        {
+            set
+            {
+                var spec = UI.Theme.ResolveSpec(value);
+                Panel.SetFill(spec);
+            }
+        }
+
+        /// <summary>圆角半径：单值 / <c>TL,TR,BR,BL</c>（CSS border-radius 顺序）/ <c>pill</c>。</summary>
+        [UIAttr, Preserve]
+        public string Radius
+        {
+            set => Panel.SetRadius(RadiusParser.Parse(value));
+        }
+
+        /// <summary>内描边宽度（px，向内绘制，不影响布局）。</summary>
+        [UIAttr, Preserve]
+        public string BorderWidth
+        {
+            set => Panel.SetBorderWidth(ProceduralValueParser.Pixels(value, "borderWidth"));
+        }
+
+        /// <summary>描边色。完整渐变语法（方向 / 2..4 色标 / 提示），与填充共用同一条渐变线（spec 2026-09-17 §7）。</summary>
+        [UIAttr, Preserve]
+        public string BorderColor
+        {
+            set => Panel.SetBorderColor(UI.Theme.ResolveSpec(value));
+        }
+
+        /// <summary>外发光半径（px）。会把绘制四边形外扩同样的距离。</summary>
+        [UIAttr, Preserve]
+        public string Glow
+        {
+            set => Panel.SetGlowSize(ProceduralValueParser.Pixels(value, "glow"));
+        }
+
+        /// <summary>发光色。完整渐变语法；不写时跟随整条填充渐变（置不透明；无填充则白）。</summary>
+        [UIAttr, Preserve]
+        public string GlowColor
+        {
+            set => Panel.SetGlowColor(UI.Theme.ResolveSpec(value));
+        }
+
+        /// <summary>内发光宽度（px，从形状边缘向内衰减）。不改几何，也不影响布局。</summary>
+        [UIAttr, Preserve]
+        public string InnerGlow
+        {
+            set => Panel.SetInnerGlowSize(ProceduralValueParser.Pixels(value, "innerGlow"));
+        }
+
+        /// <summary>
+        /// 内发光色。纯色 only；默认白 —— 跟随填充色的话，在不透明填充上会完全看不见。
+        /// 写深色即内阴影 / 边缘暗角。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string InnerGlowColor
+        {
+            set => Panel.SetInnerGlowColor(UI.Theme.ResolveSpec(value));
+        }
+
+        /// <summary>
+        /// 曝光倍数（≥ 1，默认 1 = 不变）：这个面发出的光有多亮。作用在填充 + 两层发光 + 描边的
+        /// 合成上 —— 核心发白、光晕保色相，是「光」而不是「更亮的颜色」。玻璃面不作用。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Intensity
+        {
+            set => Panel.SetIntensity(IntensityAttrParser.Parse(value));
+        }
+
+        /// <summary>
+        /// 噪声雾（spec 2026-09-17 haze）：斑块的特征尺寸（px），<c>&gt; 0</c> 即开启。低频 fBm 决定雾的
+        /// alpha、<c>hazeColor</c> 决定颜色；压在填充之上、内发光与描边之下，只在形状内侧。噪声在
+        /// Canvas 空间采样，同参数的相邻面板自然各不相同。玻璃面不作用。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Haze
+        {
+            set => Panel.SetHazeSize(ProceduralValueParser.Pixels(value, "haze"));
+        }
+
+        /// <summary>
+        /// 雾的颜色，完整渐变语法 —— 这条 ramp 同时就是方向遮罩：<c>to top, cyan/0.8, cyan/0</c> = 从底边
+        /// 渗入的青雾。默认白、不跟随填充（填充色的雾在不透明填充上看不见）。<c>/alpha</c> 是强度旋钮。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string HazeColor
+        {
+            set => Panel.SetHazeColor(UI.Theme.ResolveSpec(value));
+        }
+
+        /// <summary>雾的流速（px/s，未缩放时钟），默认 0 = 静止。三个 octave 沿不同向量漂移，图样形变而不是整体平移。</summary>
+        [UIAttr, Preserve]
+        public string HazeDrift
+        {
+            set => Panel.SetHazeDrift(ProceduralValueParser.Pixels(value, "hazeDrift"));
+        }
+
+        /// <summary>
+        /// 雾的覆盖率 0..1（默认 0.5）：0 = 稀疏的几团光、中间露底；1 = 原始噪声场原样，整面平雾；默认是
+        /// 参考图的薄雾 + 亮云团。与 <c>hazeColor</c> 的 <c>/alpha</c>（整体浓淡）正交。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string HazeDensity
+        {
+            set => Panel.SetHazeDensity(HazeDensityAttrParser.Parse(value));
+        }
+
+        /// <summary>
+        /// 玻璃模式：填充改为采样模糊后的 backdrop + 边缘折射 / 打光，形状仍是同一套 SDF。
+        /// 见 <c>UI.Glass</c>：没有可用 backdrop（无 URP / 关闭画质选项 / 无相机）时自动退化成
+        /// 半透明面板。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Glass
+        {
+            set => Panel.SetGlass(GlassAttrParser.ParseFlag(GlassAttrParser.Glass, value));
+        }
+
+        /// <summary>磨砂强度 0–1。</summary>
+        [UIAttr, Preserve]
+        public string Frost
+        {
+            set => Panel.SetFrost(GlassAttrParser.ParseValue(GlassAttrParser.Frost, value));
+        }
+
+        /// <summary>玻璃厚度（px）：边缘折射带的宽度。0 = 完全平板，无折射也无边缘打光。</summary>
+        [UIAttr, Preserve]
+        public string Depth
+        {
+            set => Panel.SetDepth(GlassAttrParser.ParseValue(GlassAttrParser.Depth, value));
+        }
+
+        /// <summary>色散强度 0–1：折射带内 RGB 分量的偏移差。</summary>
+        [UIAttr, Preserve]
+        public string Dispersion
+        {
+            set => Panel.SetDispersion(GlassAttrParser.ParseValue(GlassAttrParser.Dispersion, value));
+        }
+
+        /// <summary>光源方向（度）：0 = 正上方，顺时针增。</summary>
+        [UIAttr, Preserve]
+        public string LightAngle
+        {
+            set => Panel.SetLightAngle(GlassAttrParser.ParseValue(GlassAttrParser.LightAngle, value));
+        }
+
+        /// <summary>边缘高光强度 0–1。0 = 关闭打光层。</summary>
+        [UIAttr, Preserve]
+        public string LightIntensity
+        {
+            set => Panel.SetLightIntensity(
+                GlassAttrParser.ParseValue(GlassAttrParser.LightIntensity, value));
+        }
+
+        /// <summary>backdrop 饱和度乘子（vibrancy）。1 = 原样，0 = 灰度。</summary>
+        [UIAttr, Preserve]
+        public string Saturation
+        {
+            set => Panel.SetSaturation(GlassAttrParser.ParseValue(GlassAttrParser.Saturation, value));
+        }
+
+        /// <summary>磨砂颗粒强度 0–1：兼作去 banding。</summary>
+        [UIAttr, Preserve]
+        public string Noise
+        {
+            set => Panel.SetNoise(GlassAttrParser.ParseValue(GlassAttrParser.Noise, value));
+        }
+
+        /// <summary>
+        /// 融合半径（px）：把本 Frame 的**直接玻璃子级**焊成一整片连续玻璃，交界处用厚度台阶而不是
+        /// 分割线区分。写了 weld 的 Frame 自身不画玻璃，只当承载者；组级参数（frost / lightAngle /
+        /// lightIntensity / saturation / noise / dispersion 和描边、发光）写在它身上，
+        /// 逐块参数（radius / depth / color）写在子级身上。
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Weld
+        {
+            set
+            {
+                var weld = GlassAttrParser.ParseValue(GlassAttrParser.Weld, value);
+                // weld="" / "0" 是作者取消融合的唯一写法（Variant 只能改值不能删属性），
+                // 此时不为它凭空建组。
+                if (weld <= 0f && _group == null) return;
+                _group ??= GlassGroupPanel.Attach(GameObject);
+                _group.SetWeld(weld);
+            }
+        }
+
+        /// <summary>
+        /// 厚度台阶的过渡带宽度（px）：两块厚度不同的玻璃融合时，台阶上高出的一方沿交界现出一道
+        /// 高光、并把背景轻微折一下 —— <c>seam</c> 就是这道台阶从厚走到薄的距离，高光约占其一半。
+        /// 0 = 本机能画的最锐（shader 兜到两个设备像素）。厚度相同的两块之间没有台阶，写多少都一样。
+        ///
+        /// <para>与 <c>weld</c> 一样是组级参数、且**不挂面板**：它只被融合组的 shader 读，单块玻璃
+        /// 没有第二块可比厚度。值存在 Frame 上、由 <see cref="OnAfterApply"/> 推给组，而不是走
+        /// <c>Panel.SetSeam</c> —— 属性应用无序，而只写了 <c>weld</c> + <c>seam</c> 的承载者压根
+        /// 没有 <see cref="ProceduralPanel"/>，从那儿读会把作者写的值悄悄丢掉。</para>
+        /// </summary>
+        [UIAttr, Preserve]
+        public string Seam
+        {
+            set => _seam = GlassAttrParser.ParseValue(GlassAttrParser.Seam, value);
+        }
+
+        /// <summary>
+        /// 属性应用是无序的（<c>ControlAttributeApplier</c> 遍历的是 HashSet），而且一次实例化会连写
+        /// 十几个视觉属性。setter 只打脏标记，材质在这里统一解算一次 —— 顺带让 <c>glass</c> 写在
+        /// <c>frost</c> 前面还是后面都不再有区别。
+        ///
+        /// 子树先于本节点实例化完毕（<c>ScreenInstantiator</c> 把 Apply 放在递归之后），所以这里
+        /// 也是收集 weld 成员的正确时机；ReSolve 会再跑一次，Variant 新增的块因此能被接上。
+        /// </summary>
+        internal override void OnAfterApply()
+        {
+            // Unity `== null` rather than `?.`: these components read as null once destroyed (a
+            // Screen torn down out from under a pending ReSolve), and `?.` uses CLR semantics, which
+            // would happily call into the carcass and throw MissingReferenceException — aborting the
+            // whole ReSolve pass, not just this Frame.
+            if (_panel != null) _panel.FlushParams();
+            if (_group != null)
+            {
+                // 排在 SyncMembers 之前：组参数就是在那一趟里上传的。
+                _group.SetSeam(_seam);
+                _group.SyncMembers(_panel != null ? _panel : null);
+            }
+            // 排在 SyncMembers 之后：正在融合的承载者会把自己那块 suppress 掉，而被 suppress 的
+            // 面板不出几何、也不持有材质，当不了遮罩源 —— 这个结论要等 SyncMembers 跑完才成立。
+            ReconcileMask();
+        }
+
+    }
+}

@@ -1,0 +1,639 @@
+using NUnit.Framework;
+using PromptUGUI.Application;
+using PromptUGUI.Controls;
+using R3;
+using UnityEngine;
+using UnityEngine.TestTools;
+using UnityEngine.UI;
+
+namespace PromptUGUI.Tests.EditMode.Controls
+{
+    public class TabBarTests
+    {
+        [SetUp] public void SetUp() => UI.ResetForTests();
+        [TearDown] public void TearDown() => UI.ResetForTests();
+
+        private static TabBar OpenBar(string innerXml)
+        {
+            var xml = $@"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>{innerXml}</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            return UI.Open("S").Get<TabBar>("bar");
+        }
+
+        [Test]
+        public void TabBar_Has_ToggleGroup_And_HorizontalLayoutGroup()
+        {
+            var bar = OpenBar("<TabBar id='bar'/>");
+            Assert.IsNotNull(bar.GameObject.GetComponent<ToggleGroup>(), "ToggleGroup on self");
+            Assert.IsNotNull(bar.GameObject.GetComponent<HorizontalLayoutGroup>(), "HLG default");
+            Assert.IsFalse(bar.GameObject.GetComponent<ToggleGroup>().allowSwitchOff, "TB-D7 fixed false");
+        }
+
+        [Test]
+        public void TabBar_Children_Share_ToggleGroup()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a'/>
+    <Tab id='b'/>
+  </TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            var a = screen.Get<Tab>("a").GameObject.GetComponent<UnityEngine.UI.Toggle>();
+            var b = screen.Get<Tab>("b").GameObject.GetComponent<UnityEngine.UI.Toggle>();
+            var group = bar.GameObject.GetComponent<UnityEngine.UI.ToggleGroup>();
+            Assert.AreSame(group, a.group);
+            Assert.AreSame(group, b.group);
+        }
+
+        [Test]
+        public void Tab_Bind_Toggle_Switches_Frame_SetActive()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' bind='fa'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var fa = screen.Get<Frame>("fa");
+            var fb = screen.Get<Frame>("fb");
+            var a = screen.Get<Tab>("a");
+            var b = screen.Get<Tab>("b");
+            a.IsOn = true;
+            Assert.IsTrue(fa.GameObject.activeSelf);
+            b.IsOn = true;
+            Assert.IsFalse(fa.GameObject.activeSelf);
+            Assert.IsTrue(fb.GameObject.activeSelf);
+        }
+
+        // bind= takes any control, not only a <Frame>: a page whose own sub-views switch inside it is
+        // a <Pages> (spec 2026-09-17-pages-design §4.4), and the tab flips that container as a whole.
+        [Test]
+        public void Tab_Bind_To_Pages_Switches_It()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' bind='pa' isOn='true'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Pages id='pa' selected='y'><Frame id='x'/><Frame id='y'/></Pages>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var pa = screen.Get<Pages>("pa");
+            var fb = screen.Get<Frame>("fb");
+            Assert.IsTrue(pa.GameObject.activeSelf, "the selected tab's <Pages> is shown");
+            Assert.IsFalse(fb.GameObject.activeSelf);
+            Assert.IsTrue(screen.Get("y").GameObject.activeInHierarchy, "…with its own selected page");
+            Assert.IsFalse(screen.Get("x").GameObject.activeSelf);
+
+            screen.Get<Tab>("b").IsOn = true;
+            Assert.IsFalse(pa.GameObject.activeSelf, "the tab flips the container as a whole");
+            Assert.IsTrue(fb.GameObject.activeSelf);
+            Assert.AreEqual("y", pa.Selected, "…without touching what is selected inside it");
+
+            screen.Get<Tab>("a").IsOn = true;
+            Assert.IsTrue(pa.GameObject.activeSelf);
+            Assert.IsTrue(screen.Get("y").GameObject.activeInHierarchy);
+        }
+
+        [Test]
+        public void Tab_Bind_To_Missing_Frame_Warns_Once_Then_Silent()
+        {
+            LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex("Tab.bind='nope'.*did not resolve"));
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'><Tab id='a' bind='nope' isOn='true'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var a = screen.Get<Tab>("a");
+            a.IsOn = false;
+            a.IsOn = true;
+            // No further warn expected — LogAssert would fail if a 2nd warning fires.
+        }
+
+        [Test]
+        public void TabBar_With_No_Initial_IsOn_Auto_Selects_First_Tab()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'><Tab id='a'/><Tab id='b'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            Assert.IsTrue(screen.Get<Tab>("a").IsOn);
+            Assert.IsFalse(screen.Get<Tab>("b").IsOn);
+        }
+
+        // User report: a window resize (which runs Screen.ReSolve when scale="Nx"/"<r>r") snaps the
+        // active tab back to the declared default — losing the user's selection and the page they
+        // navigated to. The declared isOn is the INITIAL selection only; a runtime selection (and
+        // its bound page) must survive a ReSolve.
+        [Test]
+        public void Tab_RuntimeSelection_Survives_ReSolve()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' isOn='true' bind='fa'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var a = screen.Get<Tab>("a");
+            var b = screen.Get<Tab>("b");
+            var fa = screen.Get<Frame>("fa");
+            var fb = screen.Get<Frame>("fb");
+
+            b.IsOn = true;                   // user switches to tab b (a turns off via ToggleGroup)
+            Assert.IsTrue(b.IsOn);
+            Assert.IsFalse(a.IsOn);
+            Assert.IsTrue(fb.GameObject.activeSelf, "page b shown after user switch");
+            Assert.IsFalse(fa.GameObject.activeSelf);
+
+            screen.ReSolve();                // window resize / scale recompute
+
+            Assert.IsTrue(b.IsOn, "user's tab selection survives ReSolve");
+            Assert.IsFalse(a.IsOn, "declared-default tab is NOT force-re-selected on ReSolve");
+            Assert.IsTrue(fb.GameObject.activeSelf, "bound page b stays shown after ReSolve");
+            Assert.IsFalse(fa.GameObject.activeSelf, "bound page a stays hidden after ReSolve");
+        }
+
+        [Test]
+        public void TabBar_Direction_Vertical_Uses_VerticalLayoutGroup()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' direction='vertical'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            Assert.IsNull(bar.GameObject.GetComponent<HorizontalLayoutGroup>(), "HLG removed");
+            Assert.IsNotNull(bar.GameObject.GetComponent<VerticalLayoutGroup>(), "VLG present");
+        }
+
+        // Regression (user report): adding direction="horizontal" crammed every Tab at the origin and
+        // logged "Can't add 'HorizontalLayoutGroup' ... already added". Root cause: ApplyDirection always
+        // destroyed+recreated the LayoutGroup, and Object.Destroy is DEFERRED to end-of-frame in play mode,
+        // so the same-frame AddComponent collided with the not-yet-removed group ([DisallowMultipleComponent]);
+        // the add failed and the deferred destroy then left the TabBar with NO layout group. Invisible in
+        // EditMode (DestroyImmediate is synchronous), so we lock the mode-independent contract: re-applying
+        // the SAME direction must reuse the existing group (a no-op on the component), never destroy+recreate.
+        [Test]
+        public void TabBar_ReapplySameDirection_ReusesLayoutGroup()
+        {
+            var bar = OpenBar("<TabBar id='bar' direction='horizontal'/>");
+            var go = bar.GameObject;
+            var first = go.GetComponent<HorizontalLayoutGroup>();
+            Assert.IsNotNull(first, "HLG present after open");
+
+            bar.Direction = "horizontal";   // mirrors ReSolve / explicit base re-apply of the unchanged value
+
+            Assert.AreSame(first, go.GetComponent<HorizontalLayoutGroup>(),
+                "same-direction re-apply must reuse the existing LayoutGroup (no destroy+recreate)");
+            Assert.AreEqual(1, go.GetComponents<LayoutGroup>().Length, "exactly one LayoutGroup");
+        }
+
+        // Guard the genuine H<->V swap (the portrait-variant flip): exactly one correct group each way,
+        // no orphaned/duplicate group. Exercises the DestroyImmediate-always swap path in both modes.
+        [Test]
+        public void TabBar_DirectionSwap_KeepsExactlyOneLayoutGroup()
+        {
+            var bar = OpenBar("<TabBar id='bar' direction='horizontal'/>");
+            var go = bar.GameObject;
+
+            bar.Direction = "vertical";
+            Assert.IsNull(go.GetComponent<HorizontalLayoutGroup>(), "HLG gone after swap to vertical");
+            Assert.IsNotNull(go.GetComponent<VerticalLayoutGroup>(), "VLG present after swap");
+            Assert.AreEqual(1, go.GetComponents<LayoutGroup>().Length, "exactly one group after swap");
+
+            bar.Direction = "horizontal";
+            Assert.IsNull(go.GetComponent<VerticalLayoutGroup>(), "VLG gone after swap back");
+            Assert.IsNotNull(go.GetComponent<HorizontalLayoutGroup>(), "HLG present after swap back");
+            Assert.AreEqual(1, go.GetComponents<LayoutGroup>().Length, "exactly one group after swap back");
+        }
+
+        [Test]
+        public void TabBar_Spacing_And_Padding_Apply_To_LayoutGroup()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' spacing='8' padding='4,6'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            var hlg = bar.GameObject.GetComponent<HorizontalLayoutGroup>();
+            Assert.AreEqual(8f, hlg.spacing);
+            // RectOffset is a reference type with no value-equality, assert fields individually.
+            Assert.AreEqual(6, hlg.padding.left);
+            Assert.AreEqual(6, hlg.padding.right);
+            Assert.AreEqual(4, hlg.padding.top);
+            Assert.AreEqual(4, hlg.padding.bottom);
+        }
+
+        [Test]
+        public void TabBar_OnSelectionChanged_Fires_With_Newly_Selected_Tab()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'><Tab id='a' isOn='true'/><Tab id='b'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            Tab observed = null;
+            using var sub = bar.OnSelectionChanged.Subscribe(t => observed = t);
+
+            screen.Get<Tab>("b").IsOn = true;
+            Assert.AreSame(screen.Get<Tab>("b"), observed);
+        }
+
+        [Test]
+        public void TabBar_SelectedTab_And_SelectedIndex_Reflect_State()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'><Tab id='a'/><Tab id='b' isOn='true'/><Tab id='c'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            Assert.AreEqual(1, bar.SelectedIndex);
+            Assert.AreEqual("b", bar.SelectedTab.Id);
+        }
+
+        [Test]
+        public void TabBar_With_Static_Template_Wrapper_Collects_Inner_Tab()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'>
+  <Template name='FileTab'>
+    <Param name='isOn' default='false'/>
+    <Frame><Tab id='tab' isOn='{{isOn}}'/></Frame>
+  </Template>
+  <Screen name='S'>
+    <TabBar id='bar'>
+      <FileTab isOn='true'/>
+      <FileTab isOn='false'/>
+    </TabBar>
+  </Screen>
+</PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            Assert.AreEqual(2, bar.Count, "TabBar collected 2 inner Tabs via FindTabIn");
+            Assert.AreEqual(0, bar.SelectedIndex, "first Tab IsOn");
+        }
+
+        [Test]
+        public void TabBar_With_Template_Carrying_Sprite_Applies_To_Every_Instance()
+        {
+            var stub = Sprite.Create(Texture2D.whiteTexture, new Rect(0, 0, 1, 1), Vector2.zero);
+            UI.SpriteResolver = key => key == "ui:tab_bg" ? stub : null;
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'>
+  <Template name='StyledTab'>
+    <Param name='text' default=''/>
+    <Tab id='tab' sprite='ui:tab_bg' text='{{text}}'/>
+  </Template>
+  <Screen name='S'>
+    <TabBar id='bar'>
+      <StyledTab text='A'/>
+      <StyledTab text='B'/>
+    </TabBar>
+  </Screen>
+</PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            var bgA = bar.GetAt(0).GameObject.GetComponent<UnityEngine.UI.Image>();
+            var bgB = bar.GetAt(1).GameObject.GetComponent<UnityEngine.UI.Image>();
+            Assert.AreSame(stub, bgA.sprite, "Tab[0] bg sprite from Template");
+            Assert.AreSame(stub, bgB.sprite, "Tab[1] bg sprite from Template");
+        }
+
+        [Test]
+        public void TabBar_With_Static_Template_Wrapper_Fires_OnSelectionChanged()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'>
+  <Template name='FileTab'>
+    <Param name='isOn' default='false'/>
+    <Frame><Tab id='tab' isOn='{{isOn}}'/></Frame>
+  </Template>
+  <Screen name='S'>
+    <TabBar id='bar'>
+      <FileTab isOn='true'/>
+      <FileTab isOn='false'/>
+    </TabBar>
+  </Screen>
+</PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            Tab observed = null;
+            using var sub = bar.OnSelectionChanged.Subscribe(t => observed = t);
+            bar.GetAt(1).IsOn = true;
+            Assert.AreSame(bar.GetAt(1), observed);
+        }
+
+        [Test]
+        public void TabBar_Non_Selected_Bind_Frames_Are_Deactivated_Initially()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' bind='fa' isOn='true'/>
+    <Tab id='b' bind='fb'/>
+    <Tab id='c' bind='fc'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+  <Frame id='fc'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            Assert.IsTrue(screen.Get<Frame>("fa").GameObject.activeSelf);
+            Assert.IsFalse(screen.Get<Frame>("fb").GameObject.activeSelf);
+            Assert.IsFalse(screen.Get<Frame>("fc").GameObject.activeSelf);
+        }
+
+        // ── allowSwitchOff: a bar whose legal resting state is "nothing selected" ──────────
+        // The main-menu function bar — no page open at rest, any page reachable, picking the open
+        // one again closes it. Revises TB-D7 ("allowSwitchOff not exposed, fixed false"); the
+        // default is unchanged, this is opt-in.
+
+        [Test]
+        public void TabBar_AllowSwitchOff_Opens_With_Nothing_Selected()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' allowSwitchOff='true'>
+    <Tab id='a' bind='fa'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+
+            Assert.IsTrue(bar.GameObject.GetComponent<ToggleGroup>().allowSwitchOff);
+            Assert.AreEqual(-1, bar.SelectedIndex, "no auto-select: empty IS the resting state here");
+            Assert.IsNull(bar.SelectedTab);
+            Assert.IsFalse(screen.Get<Frame>("fa").GameObject.activeSelf, "no page open at rest");
+            Assert.IsFalse(screen.Get<Frame>("fb").GameObject.activeSelf);
+        }
+
+        [Test]
+        public void TabBar_AllowSwitchOff_Still_Honors_Declared_IsOn()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' allowSwitchOff='true'><Tab id='a'/><Tab id='b' isOn='true'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var bar = UI.Open("S").Get<TabBar>("bar");
+            Assert.AreEqual(1, bar.SelectedIndex, "the attr suppresses the AUTO-select, not an authored one");
+        }
+
+        // Clicking the open tab again closes its page: uGUI's InternalToggle drives isOn=false on
+        // the active member, which the default group bounces straight back to true.
+        [Test]
+        public void TabBar_AllowSwitchOff_Deselecting_Active_Tab_Sticks_And_Emits_Null()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' allowSwitchOff='true'><Tab id='a' bind='fa'/></TabBar>
+  <Frame id='fa'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            var a = screen.Get<Tab>("a");
+
+            a.IsOn = true;
+            Assert.IsTrue(screen.Get<Frame>("fa").GameObject.activeSelf);
+
+            var seen = new System.Collections.Generic.List<Tab>();
+            using var sub = bar.OnSelectionChanged.Subscribe(t => seen.Add(t));
+
+            a.IsOn = false;
+
+            Assert.IsFalse(a.IsOn, "the group must not bounce the last selection back on");
+            Assert.AreEqual(-1, bar.SelectedIndex);
+            Assert.IsFalse(screen.Get<Frame>("fa").GameObject.activeSelf, "bound page closes with it");
+            CollectionAssert.AreEqual(new Tab[] { null }, seen,
+                "a selection that went to none has to reach subscribers too");
+        }
+
+        // Switching a->b must NOT report a momentary null: uGUI turns the loser off while the
+        // winner already reads isOn, so only a genuinely empty group emits null.
+        [Test]
+        public void TabBar_AllowSwitchOff_Switching_Tabs_Emits_Only_The_Winner()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' allowSwitchOff='true'><Tab id='a'/><Tab id='b'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            screen.Get<Tab>("a").IsOn = true;
+
+            var seen = new System.Collections.Generic.List<Tab>();
+            using var sub = bar.OnSelectionChanged.Subscribe(t => seen.Add(t));
+            screen.Get<Tab>("b").IsOn = true;
+
+            CollectionAssert.AreEqual(new[] { screen.Get<Tab>("b") }, seen);
+        }
+
+        // The API a page's own close button calls. Works on a DEFAULT bar too: clearing from code
+        // is always legal, only clearing by CLICK needs allowSwitchOff.
+        [Test]
+        public void TabBar_ClearSelection_Deselects_All_And_Emits_Null()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' bind='fa'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            Assert.AreEqual(0, bar.SelectedIndex, "default bar auto-selected the first tab");
+
+            var seen = new System.Collections.Generic.List<Tab>();
+            using var sub = bar.OnSelectionChanged.Subscribe(t => seen.Add(t));
+
+            bar.ClearSelection();
+
+            Assert.AreEqual(-1, bar.SelectedIndex);
+            Assert.IsNull(bar.SelectedTab);
+            Assert.IsFalse(screen.Get<Frame>("fa").GameObject.activeSelf);
+            Assert.IsFalse(screen.Get<Frame>("fb").GameObject.activeSelf);
+            CollectionAssert.AreEqual(new Tab[] { null }, seen);
+        }
+
+        [Test]
+        public void TabBar_ClearSelection_Is_Idempotent()
+        {
+            var bar = OpenBar("<TabBar id='bar'><Tab id='a'/></TabBar>");
+            bar.ClearSelection();
+
+            var seen = new System.Collections.Generic.List<Tab>();
+            using var sub = bar.OnSelectionChanged.Subscribe(t => seen.Add(t));
+            bar.ClearSelection();
+
+            Assert.AreEqual(-1, bar.SelectedIndex);
+            CollectionAssert.IsEmpty(seen, "already empty — nothing changed, nothing announced");
+        }
+
+        // SyncInitialSelection runs on EVERY OnAfterApply, i.e. on every ReSolve (variant / theme /
+        // resize). Without a latch it would quietly re-select tab 0 and re-open the page the player
+        // just closed. The empty-selection twin of Tab_RuntimeSelection_Survives_ReSolve.
+        [Test]
+        public void TabBar_ClearedSelection_Survives_ReSolve()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar'>
+    <Tab id='a' isOn='true' bind='fa'/>
+    <Tab id='b' bind='fb'/>
+  </TabBar>
+  <Frame id='fa'/>
+  <Frame id='fb'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            bar.ClearSelection();
+
+            screen.ReSolve();
+
+            Assert.AreEqual(-1, bar.SelectedIndex, "ReSolve must not resurrect the auto-selection");
+            Assert.IsFalse(screen.Get<Frame>("fa").GameObject.activeSelf, "closed page stays closed");
+            Assert.IsFalse(screen.Get<Frame>("fb").GameObject.activeSelf);
+        }
+
+        [Test]
+        public void TabBar_AllowSwitchOff_Empty_Selection_Survives_ReSolve()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='bar' allowSwitchOff='true'><Tab id='a'/><Tab id='b'/></TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            screen.ReSolve();
+            Assert.AreEqual(-1, screen.Get<TabBar>("bar").SelectedIndex);
+        }
+
+        // User report: an agent put a hidden="true" <Tab bind="pN"> in a bar to switch a page's
+        // sub-view from code. uGUI's Toggle.Set skips the group logic for an inactive toggle, so
+        // the hidden tab came on without going through the ToggleGroup; EnforceExclusive then tried
+        // to turn the visible tab off, and the group (allowSwitchOff=false, no registered member on)
+        // flipped it straight back on — which re-entered EnforceExclusive and turned the hidden tab
+        // off again, AFTER its bound page had already been shown. Net: tA on, tN off, pA AND pN
+        // visible, and OnSelectionChanged had announced tN. A hidden Tab is not a page switch: the
+        // assignment must be refused up front, with a warning that says where to put the switch.
+        [Test]
+        public void Hidden_Tab_Selected_From_Code_Is_Refused_With_One_Warning()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='pA'/><Frame id='pB'/><Frame id='pN'/>
+  <TabBar id='bar'>
+    <Tab id='tA' bind='pA' isOn='true'/>
+    <Tab id='tB' bind='pB'/>
+    <Tab id='tN' bind='pN' hidden='true'/>
+  </TabBar>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var bar = screen.Get<TabBar>("bar");
+            var tA = screen.Get<Tab>("tA");
+            var tN = screen.Get<Tab>("tN");
+            var pA = screen.Get<Frame>("pA").GameObject;
+            var pN = screen.Get<Frame>("pN").GameObject;
+            Assert.IsFalse(tN.GameObject.activeSelf, "precondition: the tab is hidden");
+            Assert.IsFalse(pN.activeSelf, "precondition: its page starts hidden");
+
+            Tab announced = null;
+            using var sub = bar.OnSelectionChanged.Subscribe(t => announced = t);
+
+            LogAssert.Expect(LogType.Warning,
+                new System.Text.RegularExpressions.Regex("Tab 'tN' is inactive.*IsOn = true is ignored"));
+            tN.IsOn = true;
+
+            Assert.IsFalse(tN.IsOn, "the hidden tab does not come on");
+            Assert.IsTrue(tA.IsOn, "the visible selection is untouched");
+            Assert.AreSame(tA, bar.SelectedTab);
+            Assert.IsTrue(pA.activeSelf, "the visible tab's page stays");
+            Assert.IsFalse(pN.activeSelf, "the hidden tab's page must NOT appear — this was the two-pages-at-once bug");
+            Assert.IsNull(announced, "nothing was selected, so nothing is announced");
+
+            // Refused again, silently: the warning is once per Tab, like Tab.bind's.
+            tN.IsOn = true;
+            Assert.IsFalse(pN.activeSelf);
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        // The refusal is about an inactive tab NEXT TO an active one. When every tab of the group is
+        // inactive together — a bar on a page that is itself hidden (a nested TabBar on a not-yet-
+        // selected outer page), or <TabMenu>'s collapsed popup — no ToggleGroup member is registered
+        // to bounce anything, and TabGroupCore.EnforceExclusive handles the switch. That must keep
+        // working, without a warning.
+        [Test]
+        public void Tabs_On_A_Hidden_Page_Still_Switch_From_Code()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='outer'>
+    <Tab id='o1' bind='p1' isOn='true'/>
+    <Tab id='o2' bind='p2'/>
+  </TabBar>
+  <Frame id='p1'/>
+  <Frame id='p2'>
+    <TabBar id='inner'>
+      <Tab id='i1' bind='q1' isOn='true'/>
+      <Tab id='i2' bind='q2'/>
+    </TabBar>
+    <Frame id='q1'/><Frame id='q2'/>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("t", xml);
+            var screen = UI.Open("S");
+            var i1 = screen.Get<Tab>("i1");
+            var i2 = screen.Get<Tab>("i2");
+            Assert.IsFalse(screen.Get<Frame>("p2").GameObject.activeSelf, "precondition: the inner bar's page is hidden");
+            Assert.IsFalse(i2.GameObject.activeInHierarchy, "precondition: so every inner tab is inactive");
+
+            i2.IsOn = true;
+
+            Assert.IsTrue(i2.IsOn);
+            Assert.IsFalse(i1.IsOn, "the previous inner selection switches off (EnforceExclusive, no group member to bounce)");
+            Assert.AreSame(i2, screen.Get<TabBar>("inner").SelectedTab);
+            Assert.IsTrue(screen.Get<Frame>("q2").GameObject.activeSelf, "the new inner page is staged for when the outer page shows");
+            Assert.IsFalse(screen.Get<Frame>("q1").GameObject.activeSelf);
+            LogAssert.NoUnexpectedReceived();
+        }
+    }
+}

@@ -1,0 +1,239 @@
+using System.Collections.Generic;
+using PromptUGUI.IR;
+
+namespace PromptUGUI.Lint
+{
+    /// <summary>
+    /// Mask-family lint rules for `<Frame>` and `<Image>`.
+    /// Consumed by both <c>IRWalker</c> (UIXmlLint CLI, build-time errors) and
+    /// <c>ScreenInstantiator</c> (runtime warnings). Single source of truth.
+    /// </summary>
+    public static class MaskAttributeRules
+    {
+        public const string FrameSelfCode = "PUI-MASK-FRAME-SELF";
+        public const string ValueCode = "PUI-MASK-VALUE";
+        public const string PaddingNoRectCode = "PUI-MASK-PADDING-NO-RECT";
+        public const string ShowMaskNoSelfCode = "PUI-MASK-SHOWMASK-NO-SELF";
+        public const string VariantCode = "PUI-MASK-VARIANT";
+        public const string SelfNoSpriteCode = "PUI-MASK-SELF-NO-SPRITE";
+        public const string WeldSelfCode = "PUI-MASK-WELD-SELF";
+
+        public static IEnumerable<LintIssue> CheckFrame(ElementNode n)
+            => CheckFrame(n, StyleAttributeView.Empty);
+
+        /// <summary>
+        /// <c>mask="self"</c> puts a uGUI <c>Mask</c> on the node, and <c>Mask</c> asks for a
+        /// <c>Graphic</c> — not, despite the old wording of <see cref="FrameSelfCode"/>, an
+        /// <c>Image</c>. A Frame that writes a procedural visual attribute grows a
+        /// <c>ProceduralPanel</c>, which is a <c>MaskableGraphic</c>, so it can mask, and it clips to
+        /// its own rounded shape. Two structures still cannot, both silently:
+        ///
+        /// <list type="bullet">
+        /// <item>a Frame that draws nothing has no Graphic at all;</item>
+        /// <item>a <c>weld</c> carrier keeps its fused pane on a <c>GlassWeld</c> child (see
+        /// <c>GlassGroupPanel.Attach</c>) and suppresses its own panel while welding, so the node the
+        /// Mask lands on has nothing to write stencil with.</item>
+        /// </list>
+        ///
+        /// <para>Read through <c>class=</c>: skins carry the shape in a <c>&lt;Style&gt;</c>, and a
+        /// rule blind to that reports correct XML as broken.</para>
+        /// </summary>
+        public static IEnumerable<LintIssue> CheckFrame(ElementNode n, StyleAttributeView styles)
+        {
+            styles ??= StyleAttributeView.Empty;
+            foreach (var issue in CheckVariantOverrides(n)) yield return issue;
+
+            if (styles.IsUncertain(n)) yield break;
+            styles.Resolve(n, "mask", out var mask, out _);
+            var hasPadding = styles.Declares(n, "maskPadding");
+            var hasShowMask = styles.Declares(n, "showMask");
+
+            if (!string.IsNullOrEmpty(mask))
+            {
+                if (mask == "self")
+                {
+                    if (Welds(n, styles))
+                    {
+                        yield return new LintIssue(
+                            WeldSelfCode, n.Tag, n.Id,
+                            $"<Frame id='{n.Id}'>: mask=\"self\" cannot use a weld group's fused pane — " +
+                            "it is drawn on a GlassWeld child, and the carrier suppresses its own panel " +
+                            "while welding, so the Mask would clip every child away. " +
+                            "Move mask=\"self\" onto a Frame that draws its own surface, " +
+                            "or use mask=\"rect\" here.");
+                    }
+                    else if (!DrawsItself(n, styles))
+                    {
+                        yield return new LintIssue(
+                            FrameSelfCode, n.Tag, n.Id,
+                            $"<Frame id='{n.Id}'>: mask=\"self\" needs a Graphic on the same GameObject, " +
+                            "and this Frame draws nothing. Give it a procedural surface " +
+                            "(radius / color / borderWidth / glass …) and it clips children to that " +
+                            "shape; or use <Image mask=\"self\"> for a sprite mask, " +
+                            "or <Frame mask=\"rect\"> for a rectangular clip.");
+                    }
+                }
+                else if (mask != "rect")
+                {
+                    yield return new LintIssue(
+                        ValueCode, n.Tag, n.Id,
+                        $"<Frame id='{n.Id}'>: mask=\"{mask}\" is invalid. Frame allows mask=\"rect\" or mask=\"self\".");
+                }
+            }
+
+            if (hasPadding && mask != "rect")
+            {
+                yield return new LintIssue(
+                    PaddingNoRectCode, n.Tag, n.Id,
+                    $"<{n.Tag} id='{n.Id}'>: maskPadding only takes effect with mask=\"rect\" (RectMask2D); " +
+                    "stencil masks have no padding concept. " +
+                    "Add mask=\"rect\" or remove maskPadding.");
+            }
+
+            if (hasShowMask && mask != "self")
+            {
+                yield return new LintIssue(
+                    ShowMaskNoSelfCode, n.Tag, n.Id,
+                    $"<Frame id='{n.Id}'>: showMask only takes effect with mask=\"self\" (stencil Mask). " +
+                    "RectMask2D has no graphic to show/hide. Add mask=\"self\" or remove showMask.");
+            }
+        }
+
+        /// <summary>Any attribute that makes Frame attach a <c>ProceduralPanel</c>.</summary>
+        private static bool DrawsItself(ElementNode n, StyleAttributeView styles)
+        {
+            foreach (var attr in ProceduralAttrNames.PanelAttaching)
+                if (styles.Declares(n, attr)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// A declared weld with a usable radius anywhere — base value or a variant. <c>weld=""</c> /
+        /// <c>weld="0"</c> is how an author cancels fusing (a Variant can change a value but never
+        /// remove the attribute), and that Frame is an ordinary container again.
+        /// </summary>
+        private static bool Welds(ElementNode n, StyleAttributeView styles)
+        {
+            styles.Resolve(n, "weld", out var value, out var variants);
+            if (IsPositive(value)) return true;
+            foreach (var (_, v) in variants)
+                if (IsPositive(v)) return true;
+            return false;
+        }
+
+        private static bool IsPositive(string value)
+            => !string.IsNullOrWhiteSpace(value)
+               && (!float.TryParse(value.Trim(), System.Globalization.NumberStyles.Float,
+                                   System.Globalization.CultureInfo.InvariantCulture, out var px)
+                   || px > 0f);
+
+        public static IEnumerable<LintIssue> CheckImage(ElementNode n)
+            => CheckImage(n, StyleAttributeView.Empty);
+
+        public static IEnumerable<LintIssue> CheckImage(ElementNode n, StyleAttributeView styles)
+        {
+            styles ??= StyleAttributeView.Empty;
+            foreach (var issue in CheckVariantOverrides(n)) yield return issue;
+
+            // Read through class=: SelfNoSpriteCode reports an attribute that is ABSENT, and a skin
+            // carrying the sprite in a <Style> is the idiomatic form — reading only the node reports
+            // a correct document as broken. The other three checks go through the same view so a
+            // class-supplied mask is judged the same way an inline one is.
+            if (styles.IsUncertain(n)) yield break;
+            styles.Resolve(n, "mask", out var mask, out _);
+            var hasSprite = styles.Declares(n, "sprite");
+            var hasPadding = styles.Declares(n, "maskPadding");
+            var hasShowMask = styles.Declares(n, "showMask");
+
+            if (!string.IsNullOrEmpty(mask) && mask != "rect" && mask != "self")
+            {
+                yield return new LintIssue(
+                    ValueCode, n.Tag, n.Id,
+                    $"<Image id='{n.Id}'>: mask=\"{mask}\" is invalid. Image allows mask=\"rect\" or mask=\"self\".");
+            }
+
+            if (mask == "self" && !hasSprite)
+            {
+                yield return new LintIssue(
+                    SelfNoSpriteCode, n.Tag, n.Id,
+                    $"<Image id='{n.Id}'>: mask=\"self\" with no sprite= will not clip anything (stencil Mask " +
+                    "needs an Image graphic as the mask source). Add sprite=, or use mask=\"rect\" if you want " +
+                    "a rectangular clip without a sprite.");
+            }
+
+            if (hasPadding && mask != "rect")
+            {
+                yield return new LintIssue(
+                    PaddingNoRectCode, n.Tag, n.Id,
+                    $"<Image id='{n.Id}'>: maskPadding only takes effect with mask=\"rect\" (RectMask2D); " +
+                    "stencil Mask (mask=\"self\") has no padding concept. " +
+                    "Add mask=\"rect\" or remove maskPadding.");
+            }
+
+            if (hasShowMask && mask != "self")
+            {
+                yield return new LintIssue(
+                    ShowMaskNoSelfCode, n.Tag, n.Id,
+                    $"<Image id='{n.Id}'>: showMask only takes effect with mask=\"self\" (stencil Mask). " +
+                    "RectMask2D has no graphic to show/hide. Add mask=\"self\" or remove showMask.");
+            }
+        }
+
+        /// <summary>
+        /// <c>&lt;RawImage&gt;</c> exposes the same mask family as <c>&lt;Image&gt;</c> with the same
+        /// add-only implementation, but its image source is a <c>Texture</c> assigned from C# — there
+        /// is no <c>sprite=</c>, so <see cref="SelfNoSpriteCode"/> cannot apply and the two cannot
+        /// share <see cref="CheckImage"/>.
+        ///
+        /// <para>Without this it fell through BOTH guards: <c>IRWalker</c> dispatched the mask rules
+        /// only for Frame and Image, while <c>VariantBaseRules</c> skips the mask family outright on
+        /// the grounds that <see cref="VariantCode"/> "owns it in ALL cases".</para>
+        /// </summary>
+        public static IEnumerable<LintIssue> CheckRawImage(ElementNode n)
+        {
+            foreach (var issue in CheckVariantOverrides(n)) yield return issue;
+
+            n.Attributes.TryGetValue("mask", out var mask);
+
+            if (!string.IsNullOrEmpty(mask) && mask != "rect" && mask != "self")
+            {
+                yield return new LintIssue(
+                    ValueCode, n.Tag, n.Id,
+                    $"<RawImage id='{n.Id}'>: mask=\"{mask}\" is invalid. " +
+                    "RawImage allows mask=\"rect\" or mask=\"self\".");
+            }
+
+            if (n.Attributes.ContainsKey("maskPadding") && mask != "rect")
+            {
+                yield return new LintIssue(
+                    PaddingNoRectCode, n.Tag, n.Id,
+                    $"<RawImage id='{n.Id}'>: maskPadding only takes effect with mask=\"rect\" " +
+                    "(RectMask2D); stencil Mask (mask=\"self\") has no padding concept. " +
+                    "Add mask=\"rect\" or remove maskPadding.");
+            }
+
+            if (n.Attributes.ContainsKey("showMask") && mask != "self")
+            {
+                yield return new LintIssue(
+                    ShowMaskNoSelfCode, n.Tag, n.Id,
+                    $"<RawImage id='{n.Id}'>: showMask only takes effect with mask=\"self\" " +
+                    "(stencil Mask). RectMask2D has no graphic to show/hide. " +
+                    "Add mask=\"self\" or remove showMask.");
+            }
+        }
+
+        private static IEnumerable<LintIssue> CheckVariantOverrides(ElementNode n)
+        {
+            if (n.VariantOverrides.ContainsKey("mask")
+                || n.VariantOverrides.ContainsKey("showMask")
+                || n.VariantOverrides.ContainsKey("maskPadding"))
+            {
+                yield return new LintIssue(
+                    VariantCode, n.Tag, n.Id,
+                    $"<{n.Tag} id='{n.Id}'>: variant overrides on mask / showMask / maskPadding are not supported in v1 " +
+                    "(switching mask mode requires AddComponent / Destroy which has performance / lifetime issues). " +
+                    "Pick a single mask config; if you need per-variant clipping, split into two Screens or use <Add into=...>.");
+            }
+        }
+    }
+}

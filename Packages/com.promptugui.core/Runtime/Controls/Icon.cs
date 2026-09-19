@@ -1,0 +1,131 @@
+using PromptUGUI.Application;
+using PromptUGUI.Controls.Internal;
+using PromptUGUI.Registry;
+using UnityEngine;
+using UnityImage = UnityEngine.UI.Image;
+
+namespace PromptUGUI.Controls
+{
+    public sealed class Icon : Control
+    {
+        private UnityImage _img;
+        // The last name written, resolved or not: `name` is runtime-owned (registered as the
+        // RuntimeStateAttr), and the lock compares what was written, not what it resolved to.
+        private string _name;
+
+        internal override string PeekRuntimeState() => _name;
+
+        public override void OnAttached()
+        {
+            // FxImage, not a plain Image: with no blur / glow / linear tint written it behaves
+            // exactly like one (no material of its own, mesh untouched), and it is what makes those
+            // attributes possible at all — see FxImage's class note.
+            _img = GameObject.GetComponent<UnityImage>()
+                   ?? GameObject.AddComponent<FxImage>();
+            _img.preserveAspect = true;
+            _img.raycastTarget = false;
+            _img.color = UnityEngine.Color.white;
+        }
+
+        [UIAttr(IsSprite = true), Preserve]
+        public string Name
+        {
+            set
+            {
+                _name = value;
+                if (string.IsNullOrEmpty(value)) { _img.sprite = null; return; }
+                if (UI.SpriteResolver == null)
+                {
+                    _img.sprite = null;
+                    if (UI.IsSpriteResolverLoadInFlight) return;
+                    UILog.Error(this,
+                        $"Icon '{value}': UI.SpriteResolver is not registered. " +
+                        $"Call SpriteResolverHelpers.UseSpriteSetResolver(spriteSets) " +
+                        $"before opening Screens that contain <Icon>.");
+                    return;
+                }
+                var sprite = UI.SpriteResolver(value);
+                if (sprite == null)
+                    UILog.Error(this, UI.BuildSpriteResolutionFailureMessage("Icon", value));
+                _img.sprite = sprite;
+            }
+        }
+
+        [UIAttr(IsColor = true), Preserve]
+        public string Color
+        {
+            set
+            {
+                var spec = UI.Theme.ResolveSpec(value);
+                if (spec.IsGradient) Internal.RotateFlipApplier.ReserveSlot(_img);
+                Internal.ColorApplier.Apply(_img, spec);
+            }
+        }
+
+        [UIAttr, Preserve]
+        public string Tint
+        {
+            set => ImageTint.Apply(_img, value);
+        }
+
+        /// <summary>Blur radius (px). Softens the icon itself; the layout rect is untouched.</summary>
+        [UIAttr, Preserve]
+        public string Blur
+        {
+            set => ImageFxApplier.SetBlur(_img, "Icon", value);
+        }
+
+        /// <summary>Outer glow reach (px). Inflates the drawn quad, never the layout rect.</summary>
+        [UIAttr, Preserve]
+        public string Glow
+        {
+            set => ImageFxApplier.SetGlow(_img, "Icon", value);
+        }
+
+        /// <summary>Glow colour. Solid only; unwritten, the glow takes the icon's own blurred
+        /// colour.</summary>
+        [UIAttr(IsColor = true), Preserve]
+        public string GlowColor
+        {
+            set => ImageFxApplier.SetGlowColor(_img, "Icon", value);
+        }
+
+        /// <summary>Exposure of the picture and its glow (≥ 1, default 1 = unchanged): the tinted
+        /// body whitens at its core while a self-coloured glow keeps its hue. Any <c>type</c>.</summary>
+        [UIAttr, Preserve]
+        public string Intensity
+        {
+            set => ImageFxApplier.SetIntensity(_img, "Icon", value);
+        }
+
+        private float _rotation;
+        private string _flip;
+
+        /// <summary>Clockwise degrees. Mesh-level: the RectTransform and layout are untouched.</summary>
+        [UIAttr, Preserve]
+        public float Rotation
+        {
+            get => _rotation;
+            set { _rotation = value; Internal.RotateFlipApplier.Apply(_img, _rotation, _flip); }
+        }
+
+        /// <summary><c>x</c> / <c>y</c> / <c>xy</c> / <c>none</c>. Mirrors the mesh about its centre.</summary>
+        [UIAttr, Preserve]
+        public string Flip
+        {
+            get => _flip;
+            set { _flip = value; Internal.RotateFlipApplier.Apply(_img, _rotation, _flip); }
+        }
+
+        internal override void OnAfterApply()
+        {
+            // Setters run in an unspecified order and blur / glow depend on the sprite, so the
+            // material is resolved once here — before anything renders, without waiting for a
+            // canvas rebuild.
+            ImageFxApplier.Flush(_img);
+        }
+
+        public override Vector2? GetNativeSize() =>
+            _img != null && _img.sprite != null ? (Vector2?)_img.sprite.rect.size : null;
+    }
+}

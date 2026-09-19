@@ -1,0 +1,2050 @@
+---
+name: authoring-promptugui-xml
+description: Use when authoring or editing PromptUGUI `.ui.xml` files (XML-driven uGUI for Unity 6+) —
+If a task involves any XML-to-UI related content, it is highly likely to be based on this Skill.
+---
+
+# Authoring PromptUGUI `.ui.xml`
+
+PromptUGUI is a Unity 6+ package that turns compact XML files into runtime uGUI hierarchies. The description file is **pure structure + named handles** — no logic, no data binding expressions. All event/data wiring happens C#-side via `Get<T>(id)` and R3 `Observable<T>`; see the **scripting-promptugui-csharp** skill for that side.
+
+This skill covers everything you need to write or edit a `.ui.xml` correctly. Read top-to-bottom once; afterwards the **Quick Reference** at the end is enough.
+
+## Validation & feedback loop (run after every write)
+
+Every `.ui.xml` write MUST be verified before reporting the work done. Three steps, in order — each catches a different layer of mistake:
+
+### 1. Full validate CLI for every `.ui.xml` (catches semantic mistakes XSD can't express)
+
+```
+dotnet run --project Library/PackageCache/com.promptugui.core@<hash>/.lint/UIXmlLint -- <path/to/your.ui.xml>
+dotnet run --project Library/PackageCache/com.promptugui.core@<hash>/.lint/UIXmlLint -- Assets/   # 整个目录递归
+```
+
+- **Local / embedded packages have no `PackageCache` copy.** The `Library/PackageCache/com.promptugui.core@<hash>/…` path only exists when
+  PromptUGUI is resolved from a registry. If `Packages/manifest.json` pins itwith a `file:` path (local / embedded package — common in symlinked or
+  monorepo checkouts), there is no PackageCache copy; the `.lint/UIXmlLint` project (and the `Runtime/Core/Lint/` rule source) live at that `file:`
+  source instead. Resolve the real base from the manifest: grep com.promptugui.core Packages/manifest.json # e.g. "file:../../PromptUGUI"
+  dotnet run --project /.lint/UIXmlLint -- <path/to/your.ui.xml>
+- No Unity required — pure .NET, runs anywhere `dotnet` is installed.
+- **Inside Unity, the same lint is a menu: `Tools › PromptUGUI › Lint All UI XML`** (via MCP: `execute_menu_item("Tools/PromptUGUI/Lint All UI XML")`, then `read_console`). It lints every `.ui.xml` under `Assets/`, one Console line per finding (same `file:line: [CODE] …` spelling, the asset as context), warnings for rule findings and errors for what `UI.Open()` would throw on. Prefer it when a Unity instance is open: it resolves `<Import src>` through the **Addressables** settings and reads the **common libraries** straight from `PromptUGUISettings`, so it reaches the expanded pass where the CLI would need `--src-root`.
+- The CLI merges the common libraries too — it finds the `PromptUGUISettings` asset under `Assets/` by itself (or takes `--settings <file.asset>` / `--commons <src>[@<as>]`), and `--src-root <dir>` tells it the folder short Addressables addresses / `UseResourcesResolver(root)` keys are relative to. A src it cannot resolve skips that file's expanded pass with a note (never a false `PUI-EXPAND`); the summary counts how many files that was.
+- Surfaces context-dependent rules that XSD can't easily express, e.g. **`anchor` / `margin` on a direct child of `<VStack>` / `<HStack>` / `<Grid>`** (`PUI-LAYOUT-ANCHOR` / `PUI-LAYOUT-MARGIN`), or a bare `state-*` trigger with no `<Btn>` / `<Tab>` / `<Toggle>` ancestor (`PUI-STATE-NO-SOURCE`). Unity logs these as warnings (so `UI.Open()` doesn't break), but the CLI promotes them to errors with non-zero exit code so they don't slip through.
+- Exit 0 = clean. Exit 1 = at least one parse error or rule violation; STOP and fix before reporting done.
+- Rule code lives in `Library/PackageCache/com.promptugui.core@<hash>/Runtime/Core/Lint/` and is shared with `ScreenInstantiator`'s warning path — same logic, one source of truth.
+- **Runtime warnings / errors point back at the markup too.** Anything Unity logs about a node — a lint rule at `UI.Open()`, a sprite that failed to resolve, an `FxImage` blur / glow kernel warning, a hard `ParseException` — ends with a second line `  at <Tag id='x'> src:line (via src:line)`, the same `src:line` spelling the CLI prints (`src` is the resolver key / `LoadDocument` label, not a filesystem path; a node inside a Template body names the template's declaration line, `via` the invocation). Read it from `read_console` to find what to edit; clicking the Console entry pings the GameObject in the Hierarchy.
+
+### 3. Unity MCP live feedback
+
+XSD catches structural errors and a couple of identity constraints — element/attribute names, attribute patterns (`<Icon name>`), and **duplicate `id=` within the same Screen / Template body** (via `xs:unique`). Unity still catches the rest — parser semantic errors (anchor/size conflicts, missing `ref=`, Template namespace clashes), runtime hot-reload errors.
+
+After every `.ui.xml` write:
+
+```
+mcp__UnityMCP__refresh_unity(compile="request", mode="force")
+mcp__UnityMCP__read_console(action="get", types=["error","warning"])
+# Notice: this is a CoplayDev/unity-mcp, user may use official unity mcp.
+```
+
+**If MCP for Unity is unavailable** (call fails / no Unity instance): Note that the Unity MCP connection is prone to disconnection; therefore, we must first take the following steps:
+
+- Check the user's MCP configuration files. If no Unity MCP installation is detected, issue a warning to the user indicating that MCP for Unity needs to be installed; however, this should be treated strictly as a warning—do not halt operations.
+- If an installation is detected, this indicates that the user has not launched Unity or the MCP server. In this case, you must **STOP** and instruct the user to open the Unity Editor and ensure that the MCP server is running.
+
+**DO NOT USE** `mcp__UnityMCP__execute_menu_item(menu_path="Assets/Reimport All")` unless the user explicitly allows it during an alignment step — pops a modal confirmation dialog in Unity ("Are you sure you want to reimport all assets..."). The MCP call itself returns immediately, but **every subsequent MCP call will be blocked by the unclosed modal** until someone manually dismisses it in the Unity window. Recovering from an accidental trigger requires user intervention.
+
+### 4. See it: UI Preview (Play mode, straight from disk)
+
+`Tools › PromptUGUI › UI Preview` (F8) plays a small built-in scene (or the one chosen under Project Settings › PromptUGUI › UI Preview) and overlays a browser of every project `.ui.xml`. It reads files from **disk**, `UnloadAll`s before each load and lets the library hot-reload on save, so a layout can be checked in both orientations without a build, a scene or Addressables packing. The host's `[RuntimeInitializeOnLoadMethod]` boot runs there too; the panel's header says what it did not provide (sprite resolver, theme, common libraries). Drive it from `execute_code` — every call is a public static on `PromptUGUI.Editor.Preview.UIPreview`, no reflection:
+
+```csharp
+UIPreview.Launch();                       // Edit mode → Play in the preview scene (false + a warning if already playing / compile errors)
+UIPreview.Load("Planet.ui.xml");          // asset path, absolute path, or a unique tail; fire-and-forget → poll IsBusy, then LastError
+UIPreview.Select("pageBuild", "detailView");   // a page of a <Pages>; remembered per file, replayed after hot reload
+UIPreview.SetOrientation(portrait: true); // Game view → the configured size; the portrait/landscape variants follow
+UIPreview.Lint();                         // the lint menu's rules over the loaded file → issue count, Console lines
+UIPreview.LoadedFile / LoadedScreen / Screens / OpenScreen(name) / PanelCollapsed
+```
+
+Then `ScreenCapture.CaptureScreenshot(path)` in its own `execute_code` call and look at the image. Stop with `EditorApplication.isPlaying = false`; the previous `playModeStartScene` comes back on its own.
+
+## File anatomy
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<PromptUGUI version="1">
+  <Import src="common/Buttons.ui" as="ui"/>
+  <Screen   name="MainMenu"> ... </Screen>
+  <Template name="TitledPanel"> ... </Template>
+</PromptUGUI>
+```
+
+| Element                                                                                              | Role                                                      | Notes                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<PromptUGUI version="1">`                                                                           | Root, **always**.                                         | NOT `<UI>`. `version="1"` is required.                                                                                                                                                                                                                                                        |
+| `<Import src="..." [as="ns"]/>`                                                                      | Pull templates from another file.                         | Top-level only. `as=` adds namespace prefix.                                                                                                                                                                                                                                                  |
+| `<Theme name=... base=...?>`                                                                         | Top-level. Declares a named skin: color tokens + style packs. | `base` (optional) inherits from another theme by name. Children are `<Color>` and/or `<Style>`. See **Color Tokens** and **Theme-scoped styles**.                                                                                                                                          |
+| `<Color name=... value=...>`                                                                         | Inside `<Theme>`. Defines a named color token.            | `name` is kebab-case `[a-z0-9-]`. `value` is hex (`#rgb` / `#rrggbb` / `#rrggbbaa`) or a Unity CSS named color (`red` / `white` / ...).                                                                                                                                                       |
+| `<Screen name="..." [canvas="..."] [reference="..."] [scale-mode="..."] [reference.portrait="..."]>` | A complete UI scene; opened by code with `UI.Open(name)`. | One Screen = one Canvas. Names unique across all loaded files. `canvas="overlay\|camera\|world"`, default `overlay`. Optional `reference="WxH"` (+ `.variant`) switches CanvasScaler to ScaleWithScreenSize. Optional `scale-mode="auto\|pixel"` (+ `.variant`); pixel = integer scaleFactor. |
+| `<Template name="...">`                                                                              | Reusable subtree, expanded at parse time.                 | Body must have **exactly one root element**.                                                                                                                                                                                                                                                  |
+| `<Style name="...">`                                                                                 | Named attribute pack, pulled in with `class="..."`.       | Top-level **or** inside `<Theme>`, no children. `name` is kebab-case `[a-z0-9-]`; inside a `<Theme>` it may also be `ns:name` to override an imported pack. See **Style & class** and **Theme-scoped styles**.                                                                                 |
+
+`<Import>`, `<Theme>`, `<Screen>`, `<Style>`, `<Template>` are the **only** elements allowed at the top level. Comments use standard `<!-- -->`.
+
+## Built-in primitives (20)
+
+**默认视觉主题**：farm-style 像素 9-slice（奶油面 + 木描边），label / glyph 默认暖深棕（`#4A3322`）。`color=` / `sprite=` 单点 override，整体深色覆写 `ProceduralBuilders` 常量或用 Variant `color.dark="..."`。想完全去掉自带 sliced 底（只留纯色或透明）写 `sprite="none"`（等价于 `sprite=""`）——见下方"内置控件 `sprite=` 解析"说明。
+
+Pre-registered on `UI.Registry`. Use as XML tags by name. 速查目录如下；各控件属性详见下方对应 `### <Tag>` 小节（`<Icon>` / `<SafeArea>` 的小节在本节末尾）：
+
+| Tag | 用途 |
+|---|---|
+| `<Frame>` | 容器；可选程序化视觉（`color` / `radius` / `borderWidth` / `glow` / `innerGlow` / `intensity`）+ `mask="rect"` / `mask="self"`（裁成自绘形状）|
+| `<SafeArea>` | 撑满父级、按设备安全区内缩（见本节末 **Safe area** 小节） |
+| `<Image>` | uGUI Image：sprite + 等比适配 + mask |
+| `<RawImage>` | uGUI RawImage：C# 设 Texture（动态图）+ contain/cover 适配 + mask |
+| `<Text>` | TMP 文本：富对齐 + i18n |
+| `<VStack>` | 纵向布局组 |
+| `<HStack>` | 横向布局组 |
+| `<Grid>` | 固定列网格布局组 |
+| `<Btn>` | Image+Button，`OnClick` / `OnState`，自适应尺寸 |
+| `<Icon>` | 项目 SpriteSet 按名取图（见本节末 **`<Icon>`** 小节） |
+| `<Toggle>` | Image+Toggle，`OnValueChanged:bool`，可互斥 |
+| `<Slider>` | Image+Slider，`OnValueChanged:float` |
+| `<Dropdown>` | TMP_Dropdown，`OnSelected:int`（`BindOptions`） |
+| `<ScrollList>` | ScrollRect+Mask + Vertical/Horizontal/GridLayoutGroup（XML 静态子节点 + `BindItems`） |
+| `<Scrollbar>` | `<ScrollList>` / `<Dropdown>` 的滚动条**部件子元素**：轨道 = 主表面（`radius` 等同 `<Frame>`），滑块 `handle*`；不写就是默认条（见本节末 **`<Scrollbar>`** 小节） |
+| `<InputField>` | TMP_InputField，`OnValueChanged` / `OnEndEdit` / `OnSubmit:string` |
+| `<Progress>` | 只读线性进度条 |
+| `<TabBar>` | 互斥选项卡容器 |
+| `<Tab>` | 选项卡（`bind` 显隐一个兄弟控件，通常 `<Frame>` / `<Pages>`） |
+| `<TabMenu>` | 弹出式 Tab 组：收起=选中项 icon+文字+箭头，展开=一列 `<Tab>` |
+| `<Collapsible>` | 内联折叠面板：标题栏常驻、body 可收放（`<Header>` 槽 / `group=` 手风琴）|
+| `<Pages>` | N 选 1 容器：直接子节点即页，只有 `selected` 那页 active（代码切子视图：列表 ↔ 详情）；页要 `id`、**不写 `hidden`**；无视觉 |
+| `<Carousel>` | 翻页轮播卡（+ `fill="false"` 居中选择器） |
+| `<Show>` | 按状态显隐子树的无视觉 wrapper |
+| `<Decor>` | 角/边装饰：角括号 / 指示三角 / 强调线 / 贴图纹样（不参与排版）→ `reference/decor.md` |
+| `<Markdown>` | Renders a Markdown document into a scrollable subtree  |
+| `<FocusCursor>` | Screen-level cursor overlay for directional navigation. **Not a registered control** — not `Get<T>`-able; removed from the control tree before instantiation. → `reference/navigation.md` |
+
+> Re-skinning a built-in: every inner layer has an XML hook — `<Slider fill= handle=>`, `<Toggle checkmark=>`, `<Dropdown arrow= itemColor=>`, `<TabMenu arrow= arrowColor=>`, `<Progress fill= bg= frame=>`. Each takes a `<layer>` (sprite) / `<layer>Color` pair, and `""` clears the sprite for a flat look. The scrollbar of a `<ScrollList>` / `<Dropdown>` is a real child element instead — `<Scrollbar sprite= color= handle= handleColor= …/>` — so one `class=` pack dresses every bar in the document. Reach for those first. They are still *reference implementations*: for structural changes (a different popup layout, extra chrome) write your own `Control` and register it over the tag — `UI.Registry.Register<MyDropdown>("Dropdown")`. The built-ins are `sealed`, so you replace rather than subclass; see scripting-promptugui-csharp.
+
+### `<Frame>`
+
+Container. With none of the visual attributes below it is a bare `RectTransform` — no `Graphic`, no cost. Write any of them and Frame draws itself procedurally (rounded-rect SDF shader, no sprite): fill, corner radius, inner border, inner glow, outer glow. Optional `RectMask2D` (`mask="rect"`), or a stencil clip to its own drawn shape (`mask="self"` — needs one of the visual attributes, since that is what gives the Frame a `Graphic`).
+
+There is still **no `Image`** on a Frame, so `sprite=` does nothing (`PUI-CONTAINER-VISUAL-ATTR`) — use `<Image>` for sprite-based skins. Drawing is not hit-testing: a Frame is **click-through even when it draws** until you write `raycastTarget="true"` on it — the panel that should block what is behind it says so on its **root** (see **Pointer hit-testing**). For a clickable region with hover / press feedback use `<Btn>`.
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `raycastTarget` | bool | `false` | `true` = this Frame catches the pointer (blocks clicks / hover from reaching what is behind it; its interactive children still work, they draw on top). Write it on a **panel's root**. With no visual attribute it is a transparent, zero-geometry catcher — the replacement for the old `<Image color="#00000000">` hack. See **Pointer hit-testing** |
+| `mask` | `rect` / `self` | — | `rect` = `RectMask2D` 直角裁剪子节点；`self` = stencil `Mask`，把子节点裁成本 Frame 自绘的那个形状（圆角头像 / 圆角滚动区）。`self` 要求写了下面任一视觉属性 —— 否则 Frame 没有 `Graphic`，裁剪静默失效（`PUI-MASK-FRAME-SELF`）。`weld` 承载者也不行（`PUI-MASK-WELD-SELF`）|
+| `showMask` | bool | `true` | 仅 `mask="self"`。`false` = 只裁不画，一个隐形的圆角裁剪器 |
+| `maskPadding` | `T,R,B,L`（`_`=占位） | — | 仅 `mask="rect"` 时有效 |
+| `color` | hex / CSS named / theme token / `[to right,] A, B[, C[, D]]` 渐变 / `A 70%,B` 色标 / `A,70%,B` 提示 / `/alpha` | — (无填充) | Fill. Same value grammar as everywhere else — see **Color Tokens → Gradients**; a comma value is a gradient (top→bottom unless a leading `Ndeg` / `to <side or corner>` says otherwise), 2–4 colours, a `N%` suffix moves where each transitions, a bare `N%` between two colours bends that segment |
+| `radius` | corner list / `pill` / `hexagon [W] [rN]` | `0` | The panel's **shape**, not only its radius. One value applies to all four corners; four follow CSS `border-radius` order (clockwise from top-left). Each corner is a bare number (round), `cut W[xH]` (chamfer) or `notch W[xH]` (rectangular bite), optionally followed by a fillet `rN` that rounds the vertices the treatment creates (`cut 16 r6`). Sizes are px and are clamped to the room the corner has, never an error: a `cut` may run the whole edge when the neighbouring corner leaves it (`cut 16x52` on a 52-tall tab = a full-height slant), half the edge when both corners want it. → **Corner treatments** below |
+| `borderWidth` | px | `0` | Inner border — drawn **inward** from the rect edge (CSS `border-box`), so it never changes layout |
+| `borderColor` | same grammar as `color` (gradients included) | `white` | Shares the fill's gradient line — the same token on `color` and `borderColor` changes over on the same pixels. Three stops along `to right` give the "bright ends, dim middle" HUD edge |
+| `glow` | px | `0` | Outer glow radius. Inflates the drawn quad by this much (layout rect unchanged) |
+| `glowColor` | same grammar as `color` (gradients included) | 跟随 `color` | Unset → the **whole** fill ramp (direction, stops, hints) at full alpha, so `glow="12"` alone reads as "this shape glows" — in its own gradient. The ramp is laid over the layout rect; the halo outside it holds the end colours |
+| `innerGlow` | px | `0` | Inner glow — light falling off **inwards** from the outline. Pure material, so unlike `glow` it never touches the geometry |
+| `innerGlowColor` | same grammar as `color` (gradients included) | `white` | Deliberately *not* the fill: an inner glow in the fill's own colour is invisible on an opaque fill. `/alpha` is the strength knob; a **dark** value is an inset shadow; `to right, cyan, cyan/0` lights one edge only |
+| `intensity` | number `≥ 1` | `1` | **How much light the surface gives off.** `1` = as drawn; `2` ≈ one stop brighter; `3`–`5` = neon; `≥ 8` ≈ white. Runs an exposure curve over everything the panel paints (fill + both glows + border): the core whitens, the glow's tail keeps its hue — a *light*, not a lighter colour. `""` = back to `1`. Not on glass (`PUI-GLASS-INTENSITY`). → **Lighting it up** below |
+| `haze` | px | `0` | **Noise fog** — soft cloud-like light patches inside the shape (the "energy haze" on a sci-fi button). The value is the patches' feature size in px (`24`–`64` on a button / card); `> 0` switches it on, `""` back off. Painted over the fill and under the inner glow / border, inside the shape only; `intensity` lights it. On `glass="true"` it lies on the blurred backdrop the same way (no `intensity` there); not in a `weld` group (`PUI-GLASS-HAZE`). → `reference/haze.md` |
+| `hazeColor` | same grammar as `color` (gradients included) | `white` | The fog's colour, and **its mask**: the noise only scales this ramp's alpha, so `to top, cyan/0.5, cyan/0` is cyan fog that seeps in from the bottom edge and is gone at the top. Never follows the fill (fog in the fill's own colour is invisible on an opaque fill). `/alpha` is the strength knob — `0.4`–`0.6` reads as the reference's thin mist, `0.8`+ is a wash |
+| `hazeDensity` | `0`–`1` | `0.5` | **How much of the surface the fog covers.** `0` = a few sparse patches with bare fill between them; `1` = the raw cloud field, thin mist over every pixel; `0.5` = the reference look, mist everywhere with brighter clouds. Orthogonal to `/alpha` (how strong) |
+| `hazeDrift` | px/s | `0` | Flow speed. The pattern *deforms* as it drifts (three layers move at different speeds and directions) instead of sliding as one sheet; unscaled clock, so a pause menu keeps flowing; a disabled control freezes it |
+| `glass` | `true` / `false` | `false` | Frosted-glass fill: the shape shows a blurred copy of the camera image instead of a flat colour. `color` becomes a tint on top of it. → `reference/glass.md` |
+| `frost` · `depth` · `dispersion` · `lightAngle` · `lightIntensity` · `saturation` · `noise` | 数值 | 见 glass.md | Glass tuning. Ignored without `glass="true"` (`PUI-GLASS-PARAM-NO-GLASS`) |
+| `weld` | px | `0` | Fuses this Frame's **direct glass children** into one continuous pane. → `reference/glass.md` |
+| `seam` | px, signed | `3` | In a `weld` group: how far the glow of the thickness step between two blocks of different `depth` reaches from the raised block's edge, and by its sign which side it falls on (`+` outside, `−` inside). The line itself hugs the edge either way; brightness comes from the `depth` gap. Ignored without `weld` (`PUI-GLASS-SEAM-NO-WELD`). → `reference/glass.md` |
+
+```xml
+<Frame color="surface/0.9" radius="16" borderWidth="1" borderColor="stroke/0.15"/>
+<Frame radius="pill" color="accent,accent-dark"/>          <!-- 胶囊 + 上下渐变 -->
+<Frame borderWidth="2" borderColor="#fff"/>                <!-- 无填充 = 空心描边框 -->
+<Frame color="danger" radius="20" glow="18"/>              <!-- 外发光 -->
+<Frame color="#c08f36" radius="hexagon 70" innerGlow="28"
+       innerGlowColor="#fff6cf" borderWidth="2"/>          <!-- 边缘被照亮的金属牌 -->
+<Frame color="surface" radius="12" innerGlow="20"
+       innerGlowColor="black/0.35"/>                       <!-- 深色 = 内阴影 / 边缘暗角 -->
+<Frame color="#4f88ff" radius="2" glow="14"
+       glowColor="#4f88ff/0.35" intensity="3"/>            <!-- 霓虹：白蓝核心 + 蓝色光晕 -->
+<Frame color="#0b1a33" radius="6" borderWidth="1" borderColor="to right, cyan, cyan/0.3, cyan"
+       haze="40" hazeColor="to top, cyan/0.5, cyan/0"/>  <!-- 底边渗入的青色光雾（HUD 按钮底），见 haze.md -->
+<Frame color="#1b263b" radius="0,0,16,16"/>                <!-- 只圆下面两角 -->
+<Frame color="accent" radius="cut 16"/>                    <!-- 四角 45° 斜切 -->
+<Frame color="accent" radius="hexagon"/>                   <!-- 左右收成尖的六边形 -->
+<Frame glass="true" radius="16" frost="0.6"/>              <!-- 磨砂玻璃，见 glass.md -->
+<Frame radius="pill" mask="self" showMask="false">         <!-- 隐形圆角裁剪器 -->
+  <Image type="cover" sprite="ui:avatar"/>
+</Frame>
+```
+
+- Only `glow` is affected by a **祖先** `RectMask2D` clipping the extra quad away; a Frame's own `mask="rect"` / `mask="self"` clips its children, never itself. `innerGlow` paints strictly inside the shape, so nothing clips it and it costs no extra overdraw.
+- **`innerGlow` is measured from the shape edge**, and an inner border is painted on top of it. A thin translucent `borderColor` (`white/0.4` and friends) lets the glow continue seamlessly underneath; a thick opaque border covers the outermost `borderWidth` px of the band, so raise `innerGlow` to compensate.
+- **Lighting it up — `intensity`.** A colour can never look *lit*: the "glowing" look in a design is a core that has gone white with a halo that stayed saturated, i.e. one hue at two energies. `intensity` is that energy. Keep `color` as the hue you want in the halo and turn `intensity` up (`3`–`5` for a neon icon, `2` for a "lit" gold button) instead of picking a paler colour — a pale fill next to a coloured glow reads as an outline, not as light. Two knobs stay orthogonal: `glowColor`'s `/alpha` is *how much* halo, `intensity` is *how hot*. Pure single-channel colours (`#f00`, `#00f`) whiten only half-way — a hot red goes pink-white, never white. The lit surface gets pale, so give it a **dark `textColor`**. It is a dark-background effect: on a light background the halo turns into a faint tinted haze and the shape itself washes out. `*Modulate` darkens the *lit* result; a disabled control switches the light off; `intensity="1"` is bit-identical to leaving it out.
+- **Fog — `haze`.** The cloud-like light patches on a HUD button are a *noise* layer, not a gradient: `haze="40"` is the patch size, `hazeColor` is the colour *and* the mask (`to top, A, A/0` = seeping in from the bottom), `/alpha` the strength (`0.5` for a mist, not `1`), `hazeDensity` how much of the surface it covers (`0` a few patches, `1` a veil over everything, default `0.5`). It lies under the border and inside the shape; `intensity` lights it into neon fog; `hazeDrift` makes it flow. Two same-styled buttons side by side get *different* fog (the noise is sampled in canvas space, so position is the seed) while still sharing one material — the flip side is that a panel sliding in sees the fog slide *across* it, like clouds past a window. Buttons and cards, not full-screen backgrounds (12 hashes per pixel). → `reference/haze.md`
+- `mask="self"` clips to the **shape**, not to what the Frame paints: an outer `glow` does not widen the clip, and a Frame with a `radius` but no `color` still clips (that is the invisible-clipper form above). So `radius=` alone is enough to define the mask.
+- Colour / radius / border changes are material-only — a Variant flip or a colour animation never rebuilds the canvas mesh. Frames sharing identical values (typically via `class=`) share one material and keep batching.
+- Layout-only containers (`<VStack>` / `<HStack>` / `<Grid>` / `<SafeArea>`) draw nothing — wrap them in a `<Frame>` for a background.
+
+#### Corner treatments — `cut` / `notch` / `hexagon`
+
+`radius` picks each corner's **treatment**, not just a radius, so the whole sci-fi / HUD shape vocabulary is one attribute. It works everywhere `radius` works — including the inner-layer forms (`fillRadius` / `handleRadius` / `frameRadius` / `maskRadius`), which share this grammar.
+
+| Written | Shape |
+|---|---|
+| `16` | round — a quarter circle of radius 16 (what `radius` always meant) |
+| `cut 16` | 45° chamfer, 16 along both edges |
+| `cut 24x16` | chamfer reaching 24 horizontally, 16 vertically — flatter or steeper at will |
+| `cut 16x52` (on a 52-tall panel) | a slant running the **whole** side: the chamfer continues past the half-way line into the neighbouring corner's quadrant when that corner leaves it the room (a square or round corner, or a cut that stays under half). Bottom corners written this way = a trapezoid tab |
+| `notch 12` | a 12×12 rectangular bite out of the corner |
+| `notch 12x6` | 12 wide, 6 deep |
+| `cut 16 r6` | the same chamfer with both of its vertices rounded off by radius 6 — the flats stay straight, the corners where they meet become tangent arcs |
+| `notch 12 r4` | a bite whose two mouth corners and inner corner are all rounded by 4 |
+| `pill` | whole shape: both short-axis ends fully rounded |
+| `hexagon` | whole shape: left and right sides drawn to a point at the vertical centre |
+| `hexagon 32` | the same, with the tips reaching 32 in instead of the default half-height |
+| `hexagon 32 r6` | the same, with all six vertices (tips included) rounded by 6 |
+
+```xml
+<Btn radius="cut 16">开始匹配</Btn>                        <!-- 四角斜切 -->
+<Btn radius="cut 16, 8, cut 16, 8">混用</Btn>              <!-- 逐角混用 -->
+<Btn radius="hexagon 40" color="gold">开始匹配</Btn>        <!-- 横幅式六边形 -->
+<Btn radius="hexagon 40 r6" color="gold">开始匹配</Btn>     <!-- 圆滑尖端的六边形 -->
+<Tab radius="cut 14 r4, cut 14 r4, 0, 0">主页</Tab>        <!-- 上两角切 + 顶点倒圆 = 软梯形页签 -->
+<Frame radius="notch 12, 0, 0, notch 12" borderWidth="2"/>  <!-- 机械感缺口 -->
+<Style name="nav-tab" height="52" radius="0, 0, cut 16x52 r9, cut 16x52 r9"/>  <!-- 倒梯形底栏页签：斜边贯穿整高，四个角都圆 -->
+```
+
+- **Mix freely per corner**: `radius="cut 16, 8, notch 8, 0"` is four different treatments.
+- **A `cut` may reach past the half-way line.** Its reach along an edge is capped at `edge − (what the corner at the other end occupies)` — a round corner occupies its radius, a `cut` / `notch` its own reach, a square corner nothing — so `cut 16x52` on a 52-tall tab with square top corners is a slant from the top corner to the bottom (a real trapezoid), and its `rN` rounds **both** ends, the top one included. When both corners on an edge want more than half, both stop at half (that is how `hexagon` meets in a tip); a `notch` neighbour also stops the cut at half. `round` / `notch` themselves never exceed half.
+- **Fillet `rN`** (`cut 16 r6` / `notch 12 r4` / `hexagon 40 r6`) rounds every vertex the treatment creates with a **tangent arc** of radius N — a fillet on the existing shape, not a different corner shape. What to expect: the arc is tangent to both sides, so it also eats a little into the adjacent straight edge (≈0.41·N on a 45° cut); grow N past what the chamfer can hold (`cut 16` holds ≈27) and the two arcs merge — `cut 16 r30` is exactly `30`, so N is a continuous "how soft" dial; the outline's extents never change (a `hexagon … rN` tip is blunter but still touches the rect edge); on a `notch`, N is capped at half the bite's shorter side, where the bite becomes a smooth S-curve; a chamfer that runs into the neighbouring corner's quadrant carries its N there too, so every vertex in that quadrant — including that corner's own, if it was square or had a smaller N — is rounded by the larger N. `rN` is one glued token (`r6`, like the `x` in `WxH`): `16 r4` (a round corner has nothing to fillet), `pill r4`, `cut 16 r 6` and `cut 16 round 6` are parse errors that say what to write.
+- **`pill` and `hexagon` are whole-shape keywords** — writing one inside a four-value list is a parse error. Both resolve against the live rect, so they follow a resizing panel on their own; `hexagon` in particular keeps its tips exactly at half height, which hand-written `cut` values would lose the moment the height changed.
+- **Border, both glows, glass and `mask="self"` follow the new outline automatically** — no extra attributes, and an inner border keeps its width around a chamfer and around the inner corner of a notch.
+- Keywords are lower-case. `bevel` / `scoop` / `CUT` / `R6` are parse errors that name the legal words.
+
+> **Which tags draw procedurally.** `radius` / `borderWidth` / `borderColor` / `glow` / `glowColor` / `innerGlow` / `innerGlowColor` / `intensity` / `haze` / `hazeColor` / `hazeDensity` / `hazeDrift` / `glass` (+ its tuning params) work on **`<Frame>`, `<Btn>`, `<Tab>`, `<TabMenu>`, `<Toggle>`, `<Slider>`, `<Dropdown>`, `<InputField>`, `<ScrollList>`, `<Scrollbar>`, `<Collapsible>` and `<Progress>`** — see **Procedural surfaces** below for what they do on a control.
+>
+> On any other tag — `<Image>`, `<RawImage>`, `<Text>`, `<Icon>`, `<TabBar>`, `<Carousel>`, `<Markdown>` — they are accepted by the parser and then silently dropped; `PUI-CONTAINER-VISUAL-ATTR` is the only thing that tells you. (`<Image>` / `<RawImage>` are deliberate: a sprite is their whole point, and a procedural rectangle is what `<Frame>` is for.)
+>
+> `weld` and `seam` are `<Frame>`-only in all cases: they describe a group fused from a Frame's direct glass **children**, and a control has none.
+>
+> This holds for `<Style>` / `class=` too: one pack now skins a Frame and a Btn alike, and still does nothing to an `<Image>` wearing the same class.
+
+### `<Image>`
+
+uGUI Image，从 `Resources` 加载 sprite；可选 `RectMask2D`（`mask="rect"`）或 stencil `Mask`（`mask="self"`，用自身 sprite 当 mask 形状）。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `sprite` | sprite key | — | |
+| `color` | hex / CSS named / theme token | — | runtime theme token 优先于字面量；见 **Color Tokens**; gradient stop positions / hints render here too |
+| `type` | `simple` / `sliced` / `tiled` / `filled` / `contain` / `cover` | 自动 | 省略→sprite 有非零 border 取 `sliced`、否则 `simple`。`.pxl` 中声明 `tiled: true` 的 sprite 在每个 consumer 上自动渲染为 `tiled`，无需写 `type=`；显式写 `type=` 仍可覆盖。`contain` / `cover` 是相对**父 rect** 的等比适配（`AspectRatioFitter`）：`contain` 内嵌留边、`cover` 填满溢出；尺寸设在**父级**，`cover` 时父级加 `mask="rect"` 裁切。适配模式下 Image 自身 `anchor` / `size` / `width` / `height` / `margin` 被接管失效（`PUI-IMAGE-FIT-GEOMETRY`）；不可 variant 覆盖（`PUI-IMAGE-FIT-VARIANT`）；勿直接作 `<VStack>` / `<HStack>` / `<Grid>` 子节点，套 `<Frame>` |
+| `mask` | `rect` / `self` | — | |
+| `showMask` | bool | `true` | 仅 `mask="self"` |
+| `maskPadding` | `T,R,B,L` | — | 仅 `mask="rect"` |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+| `rotation` | 浮点角度，**顺时针为正** | `0` | 见 **Rotation & flip** |
+| `flip` | `x` / `y` / `xy` / `none` | `none` | 见 **Rotation & flip** |
+| `blur` | px 半径 | `0`（不糊） | 见 **Blur & glow** |
+| `glow` | px 半径 | `0`（无光） | 见 **Blur & glow** |
+| `glowColor` | hex / CSS named / theme token，**纯色**；或 `self` / `self/0.5` | 不写 = 图自身的模糊色 | 见 **Blur & glow** |
+| `intensity` | number `≥ 1` | `1` | 点亮：本体 + 光晕一起过曝光曲线，核心发白、光晕保色相。任何 `type` 都生效。见 **Blur & glow** |
+| `raycastTarget` | bool | `false` | Click-through by default (uGUI's own default is true — that put every decorative picture in the raycast list). `true` = catches the pointer. Turned on automatically when the Image is a pointer-event source (`<Trigger on="hover-enter@…">` / C# `OnPointerEnter` / `OnPointerExit` / `OnPointerDown`); an explicit `false` on a source wins and is reported once (the events can never arrive). See **Pointer hit-testing** |
+
+#### Rotation & flip
+
+`rotation` / `flip` 只在 `<Image>` / `<Icon>` / `<RawImage>` 上（其它标签 = `PUI-FLIP-TAG`：它们不生成网格；要转就转里面那个 `<Image>`）。
+
+```xml
+<Icon name="ui:chevron" rotation="180"/>            <!-- 朝下的箭头改朝上 -->
+<Image sprite="ui:arrow" flip="x"/>                 <!-- 水平镜像，不用再做一张图 -->
+<Icon name="ui:sort" rotation="90" flip="y"/>       <!-- 先镜像后旋转 -->
+<Icon name="ui:x" rotation="0" rotation.portrait="90"/>
+```
+
+They rewrite the **generated mesh** about the rect's centre and touch nothing else: the RectTransform, anchors, margins, pivot, `LayoutElement` and raycast area are exactly as authored. Three consequences worth knowing:
+
+- **A rotated child does not move its siblings.** A parent LayoutGroup measures the un-rotated rect, so the control still claims exactly its own slot. (Turning the transform instead would rotate about the *pivot*, which is derived from the anchor — a `top-left` icon would swing out of its slot.)
+- **A non-square rect turned by a non-90° angle draws outside its rect**, as any rotation would. A parent `mask="rect"` / `mask="self"` clips it correctly.
+- **`Rotation` is settable from C# and cheap to tween** (`LMotion.Create(0f, 180f, 0.2f).Bind(v => icon.Rotation = v)`), which is how a chevron flips as a panel opens. Identity (`rotation="0"` + `flip="none"`) attaches no component at all.
+
+#### Blur & glow
+
+`blur` softens the picture itself; `glow` casts light outward from the sprite's own silhouette. Both are radii in design pixels, and both are "the number is the switch" — `0` (or `""`, which is how a Variant or a theme retracts one) draws neither.
+
+```xml
+<Icon name="res:gold" glow="6"/>                              <!-- glows in its own colours -->
+<Icon name="res:gold" glow="6" glowColor="self/0.5"/>         <!-- its own colours, at half strength -->
+<Icon name="ui:alert" glow="8" glowColor="danger"/>           <!-- a flat silhouette glow -->
+<Icon name="ui:plus" color="#4f88ff" glow="14"
+      glowColor="self/0.35" intensity="3"/>                   <!-- lit: white-blue core, blue halo -->
+<Image sprite="item:blaster" blur="4"/>                       <!-- a locked item, out of focus -->
+<Image sprite="card:01" type="contain" blur="3" glow="10" glowColor="accent/0.6"/>
+
+<Style name="rare" glow="8" glowColor="gold"/>                <!-- style / theme / Variant as usual -->
+<Theme name="matte"><Style name="rare" glow="0"/></Theme>
+<Icon name="ui:trophy" glow="8" glow.portrait="0"/>
+```
+
+- **`<Image>` / `<Icon>` only** (`PUI-FX-TAG`). `<RawImage>` and `<Btn sprite=>` are not wired up yet.
+- **`type="simple"` only** — `contain` / `cover` count, since they draw one quad too; `sliced` / `tiled` / `filled` are `PUI-FX-TYPE`. A sprite with a 9-slice border becomes `sliced` *automatically* when you write no `type=`, and then draws no effect at all (the runtime warns). Write `type="simple"` to force the plain quad.
+- **`glowColor` unwritten = the sprite's own blurred colour**, so a coloured icon glows in its colours and follows `color=` and state modulates. Written, it is a flat glow in that colour whose alpha is its strength. `self` spells the default out and takes the usual `/alpha` suffix as a strength: `glowColor="self/0.5"` is the sprite's own colours at half intensity (the only way to dim a self-coloured glow). `self` is a keyword, not a theme token. A `glowColor` with no `glow` is `PUI-FX-ATTR`.
+- **`intensity` lights the sprite the way it lights a `<Frame>`** (see *Lighting it up* there): the tinted body and its glow go through one exposure curve, so a `color="#4f88ff"` icon at `intensity="3"` gets a white-blue core and keeps a blue halo — the "glowing icon" of a design mock, which no `color` value can reach. It needs no quad, so unlike `blur` / `glow` it works on **any `type`** (a 9-slice button face included) and never trips `PUI-FX-TYPE`. `1` / `""` = off, no material. A disabled control switches it off. One asymmetry: `color=` and the state `*Modulate` are the same vertex tint here, and both go *into* the exposure — so a hover modulate on a lit icon cools it slightly rather than dimming it uniformly.
+- **The glow is drawn geometry, not layout.** The rect, `LayoutElement` and the raycast area are exactly as authored — same as `<Frame glow>`, so leave room with `spacing` / `margin` or the next sibling sits on top of the light.
+- **Radii are design px in the element's own space**, so `scale=` scales them with everything else.
+- **Anything past a few texels wants mipmaps on the sprite's texture** (SpriteAtlas → *Generate Mip Maps*; TextureImporter → *Generate Mipmaps*). The kernel samples the mip level that matches its tap spacing, so with a mip chain any radius is one smooth blur. Without one it samples the full-resolution texture, and past ~3 texels of radius that draws ghost copies of thin strokes; the runtime warns once per texture when it has to fall back like that — but only when the ghosts would be far enough apart on screen to form a pattern (tap spacing ≈ 0.35 × radius × canvas scale factor ≥ 2.5 px: `blur="2"` on a 3x phone is 2.1 px apart and stays quiet however minified the sprite is, `blur="3"` there is 3.2 px and warns; at 1x anything under ~7 stays quiet) — and names the radius that would be quiet at that draw size on that screen. Lint says nothing about how big a radius is — it sees neither the texture nor the drawn size, so any threshold it picked would nag at a mipmapped atlas too. Point-filtered (pixel-art) textures cannot use mipmaps for this — keep their radii small. Mipmaps on an atlas cost a third more memory and soften every sprite in it when drawn smaller than 1:1; the atlas also needs Unity's normal padding (≥ 2 texels) and no rotation / tight packing (`reference/icons.md`).
+- **`mask="self"` on the same node** makes the glow part of the stencil, so children show through it (`PUI-FX-MASK`). Put the mask on a parent `<Frame>`, or the effect on an inner `<Image>`.
+- Works with everything else that colours the graphic: `color=` (including gradients), state `*Modulate`, `tint="linear"`, CanvasGroup alpha and the disabled grey all still apply, and the glow greys with the body. One caveat: a **stop gradient** normalises over the inflated quad, so the picture sees the ramp inset by the radius.
+- **Atlas requirement:** the sprite's atlas must pack without rotation and without tight packing, or the sampling picks up its neighbour. `Sync Atlases` sets that on atlases it creates and warns about existing ones — see `reference/icons.md`.
+
+#### Reflection recipe
+
+There is no `reflect=` attribute: draw order **is** XML order, and a stop gradient can fade a copy out, so a mirror reflection is the same node written twice.
+
+```xml
+<VStack anchor="center" spacing="0">
+  <Icon name="ui:coin" size="64x64"/>
+  <Icon name="ui:coin" size="64x64" flip="y" color="white/0.35, white/0 50%"/>
+</VStack>
+```
+
+The second copy is mirrored, starts at 35% opacity where it meets the original, and is gone by halfway down — and because the ramp ends fully transparent, that lower half is not drawn at all.
+
+**With a floor**, the layering you want is reflection < floor < object, which is just that order in the XML: the reflection node first, the floor `<Image>` next, the object last. Give the floor copy a `mask="rect"` parent covering only the strip below the contact line, so it veils the reflection without covering the object.
+
+What this costs, next to a built-in attribute:
+
+- **Two declarations to keep in sync** — a sprite, size or state change has to be made in both.
+- **The mirror is about the rect's centre**, so art with unequal padding top and bottom lands off the contact line. Trim the sprite, or nudge with `margin`.
+- **The reflection still occupies its whole rect** in a stack even where it draws nothing, so give it a smaller explicit `height` if you want the pair tighter.
+- **Anything C# drives** (a swapped sprite, a state tint) has to be applied to both nodes.
+
+### `<RawImage>`
+
+uGUI `RawImage`，渲染**运行时动态加载的 `Texture`**（头像 / 下载图 / 截图 / `RenderTexture`）。图源**只能从 C# 设**——没有 `sprite` / SpriteSet、没有 XML 图源属性：`screen.Get<RawImage>("id").Texture = tex;`（见 scripting-promptugui-csharp）。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `color` | hex / CSS named / theme token | `#ffffff` | 乘色；无 texture 时仍按 color 画纯色 quad（要初始隐形写 `color="#00000000"`）; gradient stop positions / hints render here too |
+| `type` | `contain` / `cover` | — | 等比适配，相对**父 rect**（同 `<Image>`）：`contain` 内嵌留边、`cover` 填满溢出；`cover` 裁切由父级 `mask="rect"` 负责。**仅这两个值**——`simple` / `sliced` / `tiled` / `filled` 是 sprite 专有，写了会 warning 并回退普通模式。适配模式下自身 `anchor` / `size` / `width` / `height` / `margin` 被 `AspectRatioFitter` 接管失效 |
+| `tint` | `multiply` / `linear` | `multiply` | 见 **Tint blend modes** |
+| `mask` | `rect` / `self` | — | 同 `<Image>` |
+| `showMask` | bool | `true` | 仅 `mask="self"` |
+| `maskPadding` | `T,R,B,L` | — | 仅 `mask="rect"` |
+| `rotation` | 浮点角度，顺时针为正 | `0` | 网格级，见 `<Image>` 的 **Rotation & flip** |
+| `flip` | `x` / `y` / `xy` / `none` | `none` | 网格级，见 `<Image>` 的 **Rotation & flip** |
+| `raycastTarget` | bool | `false` | 同 `<Image>`：默认穿透，作为指针事件源时自动开，显式 `false` 优先并 warn。见 **Pointer hit-testing** |
+
+- texture 由 C# 在 Open 后设置，故 `size="native"`（读 texture 像素宽高）仅在实例化前已同步赋 texture 时有值；常态请显式写 `size` 或用 `type="contain"/"cover"`。
+- 别在 `<VStack>` / `<HStack>` / `<Grid>` 直接子节点上用 fit 模式（`AspectRatioFitter` 与 LayoutGroup 抢布局）——套一层 `<Frame>`。
+
+### `<Text>`
+
+TMP_Text。文本简写：`<Text>Hello</Text>` ≡ `<Text text="Hello"/>`。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `text` | string | — | |
+| `fontSize` | float | — | |
+| `color` | hex / CSS named / theme token | — | 见 **Color Tokens**; gradients yes, stop positions / hints NO — TMP colours per glyph (`PUI-GRADIENT-STOP-NO-SURFACE`) |
+| `align` | TMP 对齐 | `left`+`middle` | 一个水平 token `left` / `center` / `right` / `justified` / `flush` / `geo`，和/或一个垂直 token `top` / `middle` / `bottom` / `baseline` / `midline` / `capline`，连字符或空格连接、顺序无关（`bottom-right` / `top-center` / `capline-flush`）；只给水平保持垂直 `middle`，只给垂直保持水平 `left`；未知 token = parse error |
+| `wrap` | bool | `true` | `false`=不换行（NoWrap）；常配 `overflow="ellipsis"` 做单行省略号 |
+| `overflow` | `overflow` / `ellipsis` / `truncate` | `overflow` | 文字塞不下框后的收尾：`overflow`=溢出框外（TMP 默认）、`ellipsis`=尾部 `…`、`truncate`=硬裁切无 `…`；未知值 = parse error |
+| `raycastTarget` | bool | `false` | Click-through by default (TMP's own default is true; the library always documented `<Text>` as `false` and now it really is). Only turn it on for text that must be hit in its own right — inside a `<Btn>` / `<Tab>` it is never needed, the control's own hit layer is under the label. See **Pointer hit-testing** |
+| `font` | string | `default` | Settings 里的 font type |
+| `autosize` | bool | `false` | 开 TMP auto-size（仅 WD% 形式——字宽最多压 50%，字号不变） |
+| `tr` | bool | `true` | `false`=跳过 i18n 提取 |
+| `ctx` | string | — | msgctxt 消歧同 msgid |
+
+**`autosize` / `overflow` 是两层，会叠加（不是二选一）**：TMP 先用 `autosize`「努力塞进去」（压字宽），塞不下再由 `overflow` 决定怎么收尾。单行省略号的标准写法：`<Text wrap="false" overflow="ellipsis"/>`；想先压扁再省略：`<Text wrap="false" autosize="true" overflow="ellipsis"/>`。**坑**：`ellipsis` / `truncate` 只在文本框「定宽」时才触发——若这个 `<Text>` 靠 native-size 撑开（框跟着文字变宽，如 Frame 里不写 `width`、或挂了 ContentSizeFitter），就永远不溢出、省略号也不出现；用 `anchor="stretch"`+`margin` 或显式 `width` 把宽度钉死。
+
+### `<VStack>`
+
+纵向布局组。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `spacing` | float | — | |
+| `padding` | `T,R,B,L`（1/2/4 段，`_`=0） | — | 如 `padding="6,_,_,_"` |
+| `childAlign` | `upper` / `middle` / `lower` - `left` / `center` / `right` | `upper-center` | `center`=`middle-center`（交叉轴居中） |
+
+### `<HStack>`
+
+横向布局组。属性同 `<VStack>`，默认 `childAlign="middle-left"`。
+
+### `<Grid>`
+
+固定列网格布局组。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `columns` | int | — | |
+| `cellSize` | `WxH` | — | |
+| `spacing` | single 或 `V,H` | — | 竖向在前，同两段 `padding` / 四段 `margin` |
+| `padding` | `T,R,B,L` | — | |
+
+### `<Btn>`
+
+Image + Button + R3 `OnClick` / `OnState`。`<Btn>开始</Btn>` 简写生成内部 TMP label 子节点；可作 template root 或注册 prefab tag。不写 size 时按文字宽 + 左右 16 padding、上下 max(44, 文字高+12) 自适应；icon-only（无 text）回退 80×44。`interactable="false"` 同时驱动 `Button.interactable` → 进入 Disabled 态（`disabledColor` / `disabledModulate` 生效、`state-disabled` fire），叠加 CanvasGroup raycast block；无任何 `disabled*` 时整控件默认灰度（see reference/states.md）。状态化视觉见 [`reference/states.md`](reference/states.md)。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `color` | hex / CSS named / theme token | — | 背景基色，见 **Color Tokens** |
+| `sprite` | sprite key | — | 背景图 |
+| `pressedSprite` | sprite key | — | 按下换 bg `overrideSprite`、松开还原（不动 `sprite`）；自动切 Btn off uGUI ColorTint 避免双重变暗；`""` / `none`=不换；与 `pressedModulate` 叠加；见 states.md |
+| `disabledSprite` | sprite key | — | Disabled 态换 bg `overrideSprite`（`interactable="false"` 或运行时 `Btn.Interactable=false`）；同 `pressedSprite` 契约；与 `pressedSprite` 共存（Disabled 优先）；仅 `<Btn>`；见 states.md |
+| `pressedOffset` | `x,y` px | — | 按下时子内容整体位移（content-holder 平移；**Unity 符号 负 y=下**）；瞬移不补间；与 `<Animation>`/`*Color`/`*Sprite` 叠加；`""`/`none`=不动；见 states.md |
+| `hoverColor` · `pressedColor` · `disabledColor` | hex / CSS / token | — | **绝对**单态 bg 色（仅 targetGraphic，不扩散） |
+| `hoverModulate` · `pressedModulate` · `disabledModulate` | hex / CSS / token | white | **相对**乘子，扩散到 bg + 所有子 Graphic |
+| `fontSize` | float | — | 仅作用于自动 label；其它 Text 属性（`align` / `wrap`）需显式 `<Text>` 子节点 |
+| `font` | string | `default` | Settings 里的 font type |
+| `textColor` | hex / CSS / token | — | **label 文字色**（区别于 `color`=背景）；支持渐变 / `/alpha`；空=默认 ink |
+| `tr` | bool | `true` | `false`=跳过 i18n |
+| `ctx` | string | — | msgctxt 消歧 |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+| `radius` · `borderWidth` · `borderColor` · `glow` · `glowColor` · `innerGlow` · `innerGlowColor` · `intensity` · `haze` · `hazeColor` · `hazeDensity` · `hazeDrift` · `glass` (+ 玻璃调参) | 同 `<Frame>` | — | **程序化表面**，见下节 |
+
+### 程序化表面（`<Frame>` 之外的控件）
+
+在 `<Btn>` / `<Tab>` / `<TabMenu>` / `<Toggle>` / `<Slider>` / `<Dropdown>` / `<InputField>` / `<ScrollList>` / `<Scrollbar>` / `<Collapsible>` / `<Progress>` 上写 `radius`（或任一其它程序化属性），该控件的**主表面**就改用自绘的圆角矩形 SDF，取值语义与 `<Frame>` 逐字相同。主题因此能换掉控件的**形状**，不只是颜色。
+
+```xml
+<Btn radius="pill" color="accent" hoverColor="accent-light">确定</Btn>
+<Btn radius="12" glass="true" borderWidth="1" borderColor="white/0.5">玻璃按钮</Btn>
+<Tab radius="cut 14, cut 14, 0, 0">主页</Tab>                              <!-- 梯形页签 -->
+<Btn radius="hexagon 70" color="#efdca6,#c08f36" innerGlow="30"
+     innerGlowColor="#fff6cf" borderWidth="2" glow="36">开始匹配</Btn>       <!-- 发光金属牌 -->
+<Btn radius="6" color="#0b1a33" borderWidth="1" borderColor="to right, cyan, cyan/0.3, cyan"
+     haze="40" hazeColor="to top, cyan/0.5, cyan/0" intensity="1.3">建造</Btn>  <!-- 青边 + 底边渗入的光雾 -->
+<Style name="skin" radius="10" borderWidth="1" borderColor="white/0.4"/>   <!-- 一个包换整套 -->
+```
+
+**主表面是哪一层**，跟 `color=` / `sprite=` 今天作用的层完全一致 —— 所以形状盖住的正好是它们上色的那块：
+
+| 控件 | 主表面 |
+|---|---|
+| `<Btn>` `<Tab>` `<Dropdown>` `<InputField>` `<ScrollList>` | 控件自身的背景 |
+| `<TabMenu>` | **弹窗面板**（不是收起状态的把手 —— 把手默认透明，要底就套一层 `<Frame>`） |
+| `<Collapsible>` | **整块面板**（标题栏 + body 一起；标题栏另有 `headerColor` / `headerSprite` 叠在上面） |
+| `<Toggle>` | **勾选框**（不含 label） |
+| `<Slider>` | **轨道**（不含滑块） |
+| `<Scrollbar>` | **轨道**（滑块走 `handle*`，见下） |
+| `<Progress>` | **The fill** (the filled segment) — its bitmap is `fill=`, its colour `fillColor`. The track (`bg` / `bgColor`) only borrows `radius`; a track that wants border / glass / glow of its own is a `<Frame>` wrapped around the bar. Note the split from `<Slider>`: `<Slider glow>` lights the track, `<Progress glow>` lights the fill. |
+
+规则：
+
+- `color`（Progress 是 `fillColor`）成为 SDF 的填充色；不写就沿用控件自带的默认底色，所以 `<Btn radius="8">` 是个圆角按钮而不是隐形按钮。
+- `sprite` 是**矛盾声明**（`PUI-PROC-SPRITE-CONFLICT`）；`sprite="none"` / `""` 不算 —— 那是「清掉贴图」，跟走程序化一致。同一条规则**按层**推广到内层：`<Slider fill= fillRadius=>` / `<Slider handle= handleRadius=>` / `<Progress frame= frameRadius=>` / `<Scrollbar handle= handle*>` 各自也是矛盾（层与层之间不互相牵连）。On `<Progress>` the primary surface's bitmap is `fill=`, so `<Progress fill="ui:bar" glow="4">` is the conflict — **except `radius`**: over a bitmap fill it goes to the clip mask instead (see below), never to the fill.
+- `pressedSprite` / `disabledSprite` / `selectedSprite` 同样矛盾（`PUI-PROC-STATE-SPRITE-CONFLICT`）：它们换的是 `Image.overrideSprite`，SDF 面上没有那个东西。改用 `pressedColor` / `disabledColor` / `selectedColor` 或 `<Show on="state-*">`。
+- `hoverColor` 等状态色**照常生效**（`targetGraphic` 跟着表面走）。**例外 `<Slider>` 与 `<Scrollbar>`**：它们的 `targetGraphic` 留在滑块上，因为会响应 hover/press 的本来就是滑块而不是轨道（`<Scrollbar>` 的滑块自己走程序化时，target 再跟着滑块的面板走）。
+- 禁用态自动去饱和、玻璃另外变薄，**形状保持**。
+- 背景 Image 只是让位（贴图清空、alpha 归零），**不销毁** —— 所以变体来回切能精确还原，控件也照常收得到点击。
+- `weld` / `seam` 不进控件：它们说的是 `<Frame>` 直接玻璃**子级**融成的那一组。
+
+**内层也能给形状，但只给形状。** `<Slider>` 与 `<Progress>` 的内部图层各多一个 `<layer>Radius`，和已有的 `<layer>Color` 配成对：
+
+| 控件 | 内层属性 |
+|---|---|
+| `<Slider>` | `fillRadius`（已填充段）· `handleRadius`（滑块，`pill` = 圆钮）|
+| `<Progress>` | `frameRadius` · `maskRadius`（clips bg + a **bitmap** fill together）。The fill is not an inner layer here — it is the primary surface, so there is no `fillRadius` (`PUI-PROG-RETIRED-ATTR`; write `radius`) |
+| `<Scrollbar>` | `handleRadius` · **`handleBorderWidth` · `handleBorderColor` · `handleGlow` · `handleGlowColor`** —— 唯一一个内层给到描边和外发光的地方：HUD 风格滚动条的发光滑块就是这个部件存在的理由，而滑块又是滚动条唯一的「内容」。仍然没有玻璃 |
+
+**内层不给玻璃**，这不是为了省属性而是语义问题：backdrop 采集不含 UI 自身，所以压在玻璃轨道上的玻璃 fill 采的是同一张 backdrop，两层长得一模一样、进度条直接消失。颜色那一半 `fillColor` / `handleColor` 早就支持 token / `/alpha` / 渐变。(`<Progress glass>` is fine — its fill is the primary surface and its track cannot be glass, so the two never sample the same backdrop; the glass fill shows the scene behind the canvas, not the `bgColor` under it.)
+
+**`<Progress radius=>` is the bar's shape.** Three consumers share it: the **fill** takes it as its own SDF corner whenever it is not a bitmap (a plain `fillColor` fill goes procedural for it), the **colour bg** takes it through a surface of its own (a bitmap bg keeps its baked corners), and a **bitmap fill** — which cannot round itself — rounds through the auto-tracked clip mask on `MaskWrapper` (`maskRadius` follows `radius`, the way `<ScrollList mask>` follows its bg sprite; write `maskRadius` — `""` included — to opt out; `mask=` sprite and `maskRadius` are exclusive, `PUI-PROG-MASK-RADIUS-CONFLICT`). No mask is ever auto-built over a procedural fill: it has its radius, and a stencil would clip its glow.
+
+**A procedural fill is the whole bar, cut at `value` in the shader.** Its rect stays full-size; `value` becomes a cut inside the SDF, so the border / inner glow / haze follow the cut edge, and the outer glow wraps it and escapes the track on every side — nothing is stencil-clipped. `mode` picks the cut, with the same meaning it has for a bitmap fill: **`scale`** (default) shrinks the fill's shape itself to the value — the radius clamps to the shorter box, so a pill bar keeps a **round leading end** (a stretched 9-slice keeps both rounded ends the same way); **`fill`** crops it with a half-plane — a **straight leading edge** (`Image.fillAmount`'s look). In both, a gradient `fillColor` is laid along the whole bar and cropped, so 30 % shows the first 30 % of the ramp; `value="0"` draws nothing at all, not even the glow. A `value` tween only re-emits four vertices — no layout, no material.
+
+```xml
+<Progress value="0.6" radius="14" bgColor="#22345a" fillColor="#ffcc33"/>   <!-- 两端都圆 — fill and bg round themselves -->
+<Progress value="0.6" radius="pill" bgColor="#0b1a33"
+          fillColor="to right, hud-edge-cyan, #3cf" glow="6" glowColor="hud-edge-cyan/0.6"
+          haze="10" hazeColor="to top, white/0.5, white/0"/>                  <!-- HUD bar: glow spills past the track -->
+<Frame radius="pill" glass="true" borderWidth="1" borderColor="white/0.3" height="20">
+  <Progress anchor="stretch" margin="2,2,2,2" value="0.6" radius="pill" fillColor="accent" glow="4"/>
+</Frame>                                                                        <!-- a dressed track: wrap a Frame -->
+<Progress value="0.4" radius="8" fill="ui:bar" bgColor="#222"/>                <!-- bitmap fill: radius goes to the mask -->
+<Slider radius="pill" fillRadius="pill" handleRadius="pill" handleColor="#fff"/>
+```
+
+### `<Toggle>`
+
+Image + uGUI Toggle + 自动 label。R3 `OnValueChanged: bool`。`<Toggle>静音</Toggle>` 简写设 label。同 `group=` 名 → 互斥。**别给单个 Toggle 写 `group=`**（uGUI ToggleGroup 默认要求至少一个 active，单成员组点上即锁死）。不写 size 时按文字宽 + 左 23 checkmark 区 + 右 5 padding、上下 max(44, 文字高+12) 自适应；checkbox-only 回退 44×44。状态化视觉见 [`reference/states.md`](reference/states.md)。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（覆盖**勾选框**，不含 label）→ 见 **程序化表面** 一节 |
+| `text` | string | — | |
+| `isOn` | bool | `false` | |
+| `group` | string | — | 互斥键 |
+| `color` | hex / CSS / token | — | **勾选框**（左侧 20×20 box）底色；见 **Color Tokens** |
+| `sprite` | sprite key | — | **勾选框** sprite。⚠️ **行为已变**：它过去指向 checkmark（跟 `color` 不是同一层），现在与 `color` 同层、与全库其它控件一致。换对勾图形请用 `checkmark` |
+| `checkmark` · `checkmarkColor` | sprite key / color | — | **对勾**图形与颜色。`checkmark=""` 去图 |
+| `font` | string | `default` | |
+| `textColor` | hex / CSS / token | — | **label 文字色**（区别于 `color`=背景）；支持渐变 / `/alpha`；空=默认 ink |
+| `hoverColor` · `pressedColor` · `selectedColor` · `disabledColor` | hex / CSS / token | — | **绝对**单态 bg 色（仅 targetGraphic，不扩散）；`selectedColor`=勾选时 bg 基色（同 `<Tab>` 的 selection-aware base，hover/pressed/disabled 叠在上面）；见 states.md |
+| `hoverModulate` · `pressedModulate` · `selectedModulate` · `disabledModulate` | hex / CSS / token | white | **相对**乘子，扩散到 bg + 所有子 Graphic；子节点 `stateReact="false"` 退出；见 states.md |
+| `pressedOffset` · `selectedOffset` | `x,y` px | — | 子内容位移（content-holder 平移；**Unity 符号 负 y=下**）；瞬移；`selectedOffset`=选中(`isOn`)保持按入；Pressed 优先；`""`/`none`=不动；见 states.md |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+
+### `<Slider>`
+
+Image + uGUI Slider。R3 `OnValueChanged: float`。不写 size 时按方向给默认：横向 160×44、纵向 44×160（长边视觉宽、短边 tap target）。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（覆盖**轨道**）→ 见 **程序化表面** 一节。滑块/填充另有 `handleRadius` / `fillRadius` |
+| `min` · `max` · `value` | float | — | |
+| `wholeNumbers` | bool | — | |
+| `direction` | `horizontal` / `vertical` / `reverse-horizontal` / `reverse-vertical` | `horizontal` | |
+| `color` | hex / CSS / token | — | **轨道**底色；见 **Color Tokens** |
+| `sprite` | sprite key | — | 轨道 sprite |
+| `fill` · `fillColor` | sprite key / color | — | **已填充段**。`fill=""` 去图 = 纯色进度段 |
+| `handle` · `handleColor` | sprite key / color | — | **滑块**。`handle=""` 去图 = 纯色方块 |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+
+### `<Dropdown>`
+
+TMP_Dropdown。R3 `OnSelected: int`。选项 C# 侧 `BindOptions(...)` 注入。不写 size 时默认 160×44（不读 caption 文字宽，避免每选一项改宽度）。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（闭合态背景）→ 见 **程序化表面** 一节 |
+| `value` | int | — | 初始索引 |
+| `color` | hex / CSS / token | — | 见 **Color Tokens** |
+| `sprite` | sprite key | — | |
+| `font` | string | `default` | |
+| `textColor` | hex / CSS / token | — | **caption 文字色**（区别于 `color`=背景）；支持渐变 / `/alpha`；空=默认 ink |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+| `popupSprite` | sprite key | — | Skins the popup list background (the closed button keeps using `sprite`/`color`). |
+| `popupColor` | hex / CSS / token | — | Tints the popup list background. |
+| `popupMask` | sprite key | follows `popupSprite` | Popup viewport clip shape; same semantics as `<ScrollList mask>`. Unset auto-tracks `popupSprite` (sprite → rounded stencil; `popupSprite=""` → square `RectMask2D`); explicit `popupMask=` (incl. `""`) opts out. |
+| `arrow` · `arrowColor` | sprite key / color | — | 收起状态右侧的下拉箭头。`arrow=""` **隐藏**箭头（无图的 Image 会画成实心方块，所以直接关组件），要自定义就给自己的 chevron |
+| `itemColor` | hex / CSS / token | `#F5F5F5` | 弹窗里**每一行的高亮底色**（hover / 选中时由 uGUI 乘上去）。默认是硬编码浅灰，**深色主题必须显式改** |
+| `itemTextColor` | hex / CSS / token | — | 弹窗**选项行**文字色（区别于 `textColor` —— 那是收起状态的 caption） |
+| `checkmark` · `checkmarkColor` | sprite key / color | — | 选中项左侧的对勾。`checkmark=""` 隐藏 |
+| （子元素）`<Scrollbar …/>` | — | 默认条 | 弹窗的滚动条：写成**直接子元素** `<Dropdown …><Scrollbar sprite= color= handle= handleColor= thickness= …/></Dropdown>`，见 **`<Scrollbar>`** 小节 / [`reference/controls-scrollbar.md`](reference/controls-scrollbar.md)。旧的 `scrollbar*` 属性已退役（`PUI-SCROLLBAR-RETIRED-ATTR`） |
+
+- 弹窗内那几层（`itemColor` / `itemTextColor` / `checkmark*`）改的是 `TMP_Dropdown` 的**模板**，之后每次展开克隆出来的选项行都继承；**已经展开着的那批实例不会跟着变**（ReSolve 通常发生在关闭态，实际不成问题）。
+
+### `<ScrollList>`
+
+ScrollRect + Mask。项可以**写在 XML 里**（成为初始 slot）、也可以 C# 侧 `BindItems(...)` 注入，或两者并用。`itemTemplate` 引用 `<Template name=...>` 或注册的 Control 类。不写 size 时按方向给视口默认：纵向 160×200、横向 200×160；网格模式下宽度改按内容算（见 `columns` 行）；实战通常显式写 size。
+
+**Static children.** XML children of a `<ScrollList>` become its Content children — they scroll, they are clipped by the viewport, and they count towards the content size (so `height="hug"` measures them). This is what makes a list previewable without running any C#: write the placeholder cards and see them. The first `BindItems` call destroys them and takes over, exactly like `<Carousel>`; after that a `screen.Get` handle to a placeholder points at a destroyed GameObject. `itemTemplate` is therefore only required **before `BindItems`** — a purely static list can omit it.
+
+Children of a list are layout-group children: `anchor` / `margin` are dropped (`PUI-LAYOUT-ANCHOR` / `PUI-LAYOUT-MARGIN`), `width="stretch"` is fine, `flow="false"` opts out. In **grid mode** a child must not write `size` / `width` / `height` either — `cellSize` on the parent is what sizes a cell (`PUI-GRID-CHILD-SIZE`).
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（背景）→ 见 **程序化表面** 一节 |
+| `itemTemplate` | tag name | — | `BindItems` 前必填；只写静态子节点时可省 |
+| `reuseItems` | bool | `true` | Rows are **recycled** across `BindItems` pushes: item *i* is bound onto row *i*, only the extra rows are instantiated and only the tail is destroyed, so a same-count push instantiates nothing. `false` = destroy and rebuild every row on every push (for a custom-Control row whose internal state is not reset by attributes). The bind callback contract that recycling relies on is in scripting-promptugui-csharp (**List / option push**). |
+| `reorder` | bool | `false` | **Drag-to-reorder.** Press a row (hold on touch), drag it, the other rows make room live, release and it settles into the gap; C# gets `OnReordered((From, To))`. Works for static children and `BindItems` rows, single column / row and grid. Variant-switchable (`reorder.portrait="true"`). → [`reference/reorder.md`](reference/reorder.md) |
+| `reorderHold` | `auto` \| duration | `auto` | How long to hold before the row lifts. `auto` = mouse `0` (lifts on the first drag frame; the wheel scrolls), touch `0.4s` (a finger drag IS the scroll) — and `0` on both when `reorderHandle` is set. Explicit values (`0.4s` / `400ms` / `0.4`) apply to both. |
+| `reorderHandle` | id inside the row | — | Only a press on that node lifts the row; the rest of the row scrolls as usual. Geometric hit (no `raycastTarget` needed — an `<Icon>` grip works). `PUI-REORDER-HANDLE-ID` when the itemTemplate / a static row lacks it. |
+| `reorderDuration` | duration | `0.15s` | Squeeze (displaced rows) and settle (the dropped row) tween length, OutCubic. `0` = instant. |
+| `direction` | `vertical` / `horizontal` | `vertical` | |
+| `columns` | int ≥ 1 | `0` | Grid mode: Content becomes a `GridLayoutGroup` wrapping into rows that grow downwards. `0` = the single column / row `direction` describes. **Spell `columns="0"` out when a variant has to leave the grid** — a variant resolving to null is skipped, not reverted, so dropping the override keeps the grid. Vertical only: with `direction="horizontal"` it is `PUI-SCROLL-COLUMNS-DIRECTION` (the direction wins at runtime); there is no row-major `rows=` in v1. Without a `size`, the list's native **width** becomes `padding + columns × cellSize + gaps` — but the scrollbar still eats `thickness + spacing` out of the viewport unless the bar is `<Scrollbar overlay="true">`. |
+| `cellSize` | `WxH` | — | Uniform cell size; **required in grid mode** (`PUI-SCROLL-COLUMNS-CELLSIZE`) — without it every cell falls back to uGUI's 100×100. Same meaning as `<Grid cellSize>`: a cell's own `size` / `width` / `height` is ignored. |
+| `spacing` | single 或 `V,H` | — | 竖向在前，同 `<Grid spacing>`。单列只用得上 V、单行只用得上 H，网格两个都用 |
+| `padding` | `T,R,B,L` | — | |
+| `color` | hex / CSS / token | — | 见 **Color Tokens** |
+| `sprite` | sprite key | — | |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+| `frame` | sprite key | — | Border layer drawn above content & scrollbar, outside the mask — scrolling content never overlaps it. Lazily created. Note: `tint=` affects only the background, not the frame. |
+| `frameColor` | hex / CSS / token | — | Tints the frame layer; setting it alone also activates the layer. |
+| （子元素）`<Scrollbar …/>` | — | 默认条 | The scrollbar is a **direct child element**: `<Scrollbar thickness="6" overlay="true" padding="1.5" radius="pill" handleRadius="pill" …/>` — track = its primary surface, handle = `handle*`. Leave it out for the stock bar. One per list; it follows `direction`. See **`<Scrollbar>`** below / [`reference/controls-scrollbar.md`](reference/controls-scrollbar.md). The old `scrollbar*` attributes are retired (`PUI-SCROLLBAR-RETIRED-ATTR`). |
+| `mask` | sprite key | follows `sprite` | Viewport clip shape. `mask="custom#slice"` = stencil mask with that sprite (auto-sliced); `mask=""` = square `RectMask2D` clip (cheaper). **Unset auto-tracks the bg `sprite`**: a sprite present (incl. the default) → rounded stencil; `sprite=""`/`sprite="none"` → square, so a transparent list's corners stay square without writing `mask=""`. Explicit `mask=` (any value, incl. `""`) opts out of auto-tracking. Unlike `<Image>`/`<Frame>`, `rect`/`self` are **not** keywords here — `mask` takes a sprite key. **The clip works along the scroll axis only**: a vertical list (and a grid) leaves its left / right open, a horizontal list its top / bottom — a row's glow, shadow or drag-to-reorder lift scale is not cut at the side edge. Rounded corners still clip (the 9-slice mask's corner pieces stay where they are; only its straight sides are extended), and a border-less custom `mask=` sprite keeps its whole shape. A row *wider* than the list therefore shows instead of being hidden — size rows to fit. |
+
+A scrolling card grid with authored placeholders — 4 columns, a thin overlaid scrollbar so the 4th
+column survives the overflow, and a narrower cell in portrait:
+
+```xml
+<ScrollList id="slots" anchor="stretch" margin="16,0,0,2"
+  columns="4" cellSize="66x100" cellSize.portrait="67x100" spacing="4"
+  sprite="none" color="#0000" itemTemplate="BuildSlot">
+  <Scrollbar thickness="6" overlay="true" sprite=""/>
+  <BuildSlot id="slot1" index="1" icon="Building:MetalExtractor" name="Refinery" level="Lv.5"/>
+  <BuildSlot id="slot2" index="2" icon="Building:SolarPlant" name="Solar Plant" level="Lv.2"/>
+</ScrollList>
+```
+
+The placeholders render in UIPreview; at runtime
+`screen.Get<ScrollList>("slots").BindItems(slots, (slot, data) => …)` replaces them with real data
+laid out in the same grid.
+
+A priority list the user sorts by hand — drag from the grip, rows make room live, the row settles on release:
+
+```xml
+<ScrollList id="tasks" itemTemplate="TaskRow" width="stretch" height="stretch"
+            reorder="true" reorderHandle="grip"/>
+```
+
+`screen.Get<ScrollList>("tasks").OnReordered.Subscribe(e => tasks.Move(e.From, e.To))` keeps the data
+in step — the rows are already in the new order when it fires. Gesture rules (mouse vs touch, hold,
+handle), the `lift` / `drop` row hooks, and the full C# contract: [`reference/reorder.md`](reference/reorder.md).
+
+### `<InputField>`
+
+TMP_InputField；R3 `OnValueChanged` / `OnEndEdit` / `OnSubmit: string`。`<InputField>初始文本</InputField>` 简写设 `text=`。`interactable="false"` 同时驱动 `TMP_InputField.interactable` → 进入 Disabled 视觉态、阻止聚焦/输入，叠加 CanvasGroup raycast block。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（背景）→ 见 **程序化表面** 一节 |
+| `text` | string | — | |
+| `placeholder` | string | — | |
+| `contentType` | `standard` / `autocorrected` / `integer-number` / `decimal-number` / `alphanumeric` / `name` / `email` / `password` / `pin` / `custom` | — | |
+| `lineType` | `single` / `multi-newline` / `multi-submit` | — | |
+| `characterLimit` | int | — | |
+| `readOnly` | bool | — | |
+| `fontSize` | float | — | 输入文本**和** placeholder（TMP `pointSize`） |
+| `textColor` | hex / CSS / token | — | **输入文字色**（区别于 `color`=背景） |
+| `placeholderColor` | hex / CSS / token | — | placeholder 文字色 |
+| `align` | TMP 双轴对齐（同 `<Text align>`） | — | 作用于文本 + placeholder |
+| `caretColor` | hex / CSS / token | — | 同时开 TMP `customCaretColor` |
+| `selectionColor` | hex / CSS / token | — | 选区高亮 |
+| `caretWidth` | int (px) | — | |
+| `color` | hex / CSS / token | — | **背景**；见 **Color Tokens** |
+| `sprite` | sprite key | — | |
+| `padding` | `T,R,B,L`（`_`=0） | 自动 | 字段边到文字的内距。**不设=自动跟随边框**：有 border sprite 时给默认内距、`sprite=""` / `"none"` 时为 0（无边框文字铺满、短字段不负高）；显式值优先 |
+| `font` | string | `default` | |
+| `tr` · `ctx` | bool · string | `true` · — | placeholder 的 i18n |
+| `tint` | `multiply` / `linear` | — | 见 **Tint blend modes** |
+
+### `<Progress>`
+
+显示型线性进度条（只读，无 `OnValueChanged`）。一行配齐 frame / mask / bg / fill / mode / direction / value。**多图层 / mask×bg 组合 / lint 详见 [`reference/controls-progress.md`](reference/controls-progress.md)。**
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` | as `<Frame>` radius | — | **The bar's shape**, shared three ways: the fill's SDF corner (when the fill is not a bitmap), the colour bg's corner, and — for a bitmap fill — the clip mask's (`maskRadius` auto-tracks it). → **程序化表面** |
+| `borderWidth` `borderColor` `glow` `glowColor` `innerGlow` `innerGlowColor` `intensity` `haze` `hazeColor` `hazeDrift` `hazeDensity` `glass` (+ glass params) | as `<Frame>` | — | **The fill is the primary surface**: every one of these lands on the filled segment, which is cut at `value` inside the SDF — the glow escapes the track and wraps the leading edge. A track that wants a border / glass of its own is a `<Frame>` around the bar. → **程序化表面** |
+| `frameRadius` · `maskRadius` | as `radius` | — | Inner-layer corners: the frame's; the clip mask's (only a bitmap fill needs one — over a procedural fill it clips the glow, `PUI-PROG-MASK-CLIPS-GLOW`) |
+| `value` | float `[0..1]` | `0` | |
+| `fill` · `bg` · `frame` · `mask` | sprite key | — | 各图层 sprite |
+| `fillColor` | hex / CSS / token | — | |
+| `bgColor` | hex / CSS / token | — | 单独设也激活 bg 层 |
+| `frameColor` | hex / CSS / token | — | 单独设也激活 frame 层 |
+| `mode` | `scale` / `fill` | `scale` | The same word for both kinds of fill: `scale` = the shape shrinks to the value (bitmap rect anchored / SDF box shrunk — round leading end on a pill), `fill` = cropped at the value (`Image.fillAmount` / half-plane — straight edge) |
+| `direction` | `horizontal` / `vertical` / `reverse-horizontal` / `reverse-vertical` | `horizontal` | |
+| `tint` | `multiply` / `linear` | — | 作用于 fill+bg+frame；见 **Tint blend modes** |
+
+### `<TabBar>`
+
+Tab 容器；私有 `ToggleGroup`（默认 `allowSwitchOff=false`，见下表）+ `Horizontal` / `VerticalLayoutGroup`。纯布局无自身视觉（要背景条套 `<Image>`）。子节点可为直接 `<Tab>` 或含 `<Tab>` 的 Template wrapper（递归收集）——**wrapper 根必须自己写 `width`/`height`**（如 `width="stretch"`），`<Tab>` 的 native-size 保底只对直接子节点生效，wrapper 漏写会塌成 0 尺寸。支持 `itemTemplate` + `BindItems`（同 `<ScrollList>`）。作为子节点的布局组——Tab 不能写 `anchor` / `margin`。**详见 [`reference/controls-tabs.md`](reference/controls-tabs.md)。**
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `direction` | `horizontal` / `vertical` | `horizontal` | |
+| `spacing` | float | — | |
+| `padding` | `T,R,B,L` | — | |
+| `itemTemplate` | tag name | `Tab` | |
+| `allowSwitchOff` | bool | `false` | Makes "nothing selected" a legal resting state: the bar opens with no tab on (unless a `<Tab>` declares `isOn="true"`) and clicking the active tab turns it off. Default keeps exactly one tab selected at all times. Also on `<TabMenu>`. See [`reference/controls-tabs.md`](reference/controls-tabs.md) |
+
+### `<Tab>`
+
+`<TabBar>` 子节点；uGUI `Toggle` + 居中 TMP label + 可选左侧 icon。经 TabBar 的 ToggleGroup 自动互斥。`bind="page_id"` 声明式在选中时显隐一个兄弟控件——通常 `<Frame>`；页里还要由代码切子视图时就是 `<Pages>`（lazy 解析缓存）；无 `bind=` → 只 fire `OnSelected`。接受嵌套子节点（Frame 式叠在 bg 上）；子节点默认就是穿透的（`raycastTarget` 默认 `false`），点击落到 Tab 自身的命中层。**A `hidden="true"` Tab is not a page switch**: while a visible tab is on, selecting a hidden one from code is refused with a warning — a page's sub-views switch inside the page (a `<Pages>` for code, a nested `<TabBar>` for the player), see [`reference/controls-tabs.md`](reference/controls-tabs.md#sub-views-inside-a-page---not-a-hidden-tab). 状态化视觉见 [`reference/states.md`](reference/states.md)；共享样式 / 动态卡详见 [`reference/controls-tabs.md`](reference/controls-tabs.md)。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `radius` · `borderWidth` · `glass` … | 同 `<Frame>` | — | **程序化表面**（背景）→ 见 **程序化表面** 一节 |
+| `text` | string | — | |
+| `isOn` | bool | `false` | |
+| `bind` | id | — | 选中时显隐的兄弟控件（通常 `<Frame>` / `<Pages>`） |
+| `color` | hex / CSS / token | — | `#00000000`=透明但可点 |
+| `font` | string | `default` | |
+| `fontSize` | float | — | |
+| `textColor` | hex / CSS / token | — | **label 文字色**（区别于 `color`=背景）；支持渐变 / `/alpha`；空=默认 ink |
+| `icon` | sprite key | — | 左对齐 24×24，间隙 4px |
+| `sprite` | sprite key | — | 常态 bg；`""` / `none` 移除自带 9-slice 底 |
+| `selectedSprite` | sprite key | — | 选中（`isOn`）时把 bg `overrideSprite` 换成它、取消选中还原——无独立 overlay；keyed on `isOn` 故 hover/press 不扰动；设了切 transition off ColorTint（同 `<Btn pressedSprite>`）；`""` / `none`=不换 |
+| `hoverColor` · `pressedColor` · `selectedColor` · `disabledColor` | hex / CSS / token | — | **绝对**单态 bg 色（仅 targetGraphic，不扩散）；`selectedColor`=**选中时** bg 基色（hover/pressed/disabled 叠在上面）；见 states.md |
+| `hoverModulate` · `pressedModulate` · `selectedModulate` · `disabledModulate` | hex / CSS / token | white | **相对**乘子，扩散到 bg + 所有子 Graphic；子节点 `stateReact="false"` 退出；见 states.md |
+| `pressedOffset` · `selectedOffset` | `x,y` px | — | 子内容位移（content-holder 平移；**Unity 符号 负 y=下**）；瞬移；`selectedOffset`=选中(`isOn`)保持按入；Pressed 优先；`""`/`none`=不动；见 states.md |
+| `tint` | `multiply` / `linear` | — | 作用于 bg（`selectedSprite` 换的也是 bg sprite，故选中图也被 tint）；见 **Tint blend modes** |
+
+### `<Collapsible>`
+
+内联折叠面板：标题栏常驻、body 收放，折叠时**下方内容顶上来**（区别于 `<TabMenu>` 的浮层弹窗）。
+标题栏是 `<Btn>` 形态的可点表面（状态广播、per-state 颜色、可聚焦），内容要么走属性三件套
+`text` / `icon` / `arrow`，要么放一个 `<Header>` 子节点自己排——**箭头两种写法都由库画、跟着折叠翻转**。
+**高度恒为「标题栏 + body」**，写 `height=` / `size=` 是 parse error（`PUI-COLLAPSIBLE-HEIGHT`）；
+宽度归作者。`expanded` 是**运行期独占状态**（用户折过之后 ReSolve 不打回）。
+**详见 [`reference/controls-collapsible.md`](reference/controls-collapsible.md)。**
+
+```xml
+<Collapsible id="tasks" text="任务" anchor="top-right" width="150" margin="90,20,_,_"
+             sprite="none" color="surface/0.55" radius="10" headerHeight="24" transition="0.2s">
+  <ScrollList id="list" itemTemplate="TaskRow" width="stretch" height="clamp(_, hug, 200)" sprite="none">
+    <Scrollbar sprite=""/>
+  </ScrollList>
+</Collapsible>
+```
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `text` · `font` · `fontSize` · `textColor` | string / … | — | 标题文字（i18n 同 `<Btn>`）。与 `<Header>` 互斥 |
+| `icon` · `iconColor` | sprite key · color | — | 标题左侧 24×24 图标。与 `<Header>` 互斥 |
+| `arrow` · `arrowColor` · `arrowSize` | sprite key · color · px | `pugui_caret` · glyph · `16` | 右侧箭头；`arrow=""` 隐藏（那块宽度还给标题）。有 `<Header>` 时**照常生效** |
+| `headerHeight` | px | `44` | 标题栏高 |
+| `headerColor` · `headerSprite` | color · sprite key | 透明 · — | 标题栏自己的底，叠在面板表面之上 |
+| `hoverColor` · `pressedColor` · `disabledColor` · `*Modulate` · `pressedOffset` | 同 `<Btn>` | — | 作用于**标题栏**；`*Modulate` 不扩散进 body |
+| `expanded` | bool | `true` | 初始展开；**运行期独占**，`.variant` 可覆盖，Theme `<Style>` 禁止 |
+| `group` | string | — | 手风琴组（Screen 范围）：展开一个自动收起同组其它；允许全部收起 |
+| `transition` | 时长 | `0.2s` | 展开 / 收起过渡；`0` = 瞬切 |
+| `maxHeight` | px | — | body 限高，超出部分可竖向拖动 / 滚轮 |
+| `spacing` · `padding` | 同 `<VStack>` | — | **body** 的行距与内距 |
+| `color` · `sprite` · `tint` · `radius` · `borderWidth` · `glow*` · `innerGlow*` · `intensity` · `glass` … | 同 `<Frame>` / 程序化表面 | 库默认 sliced 底 | **主表面 = 整块面板** |
+| `interactable` | bool | `true` | `false` = 标题栏禁用（点不动、进 Disabled 视觉），级联 body |
+| `focus` · `nav*` | 同其它 Selectable | — | 作用于标题栏；收起时 body 不在导航图里 |
+| `height` / `size`（含 `.variant`） | — | — | **parse error `PUI-COLLAPSIBLE-HEIGHT`** |
+
+`<Header>`（结构元素，非控件）：必须是**第一个**子节点、至多一个、**不接受任何属性**；其余子节点是 body。
+它的子节点**自由定位**（`anchor` / `margin` 合法），宿主是标题栏减去右侧箭头区；body 子节点则是
+`<VStack>` 语义（写 `anchor` / `margin` 报 `PUI-LAYOUT-ANCHOR` / `PUI-LAYOUT-MARGIN`）。
+用了 `<Header>` 就不能再写 `text` / `icon` 那几个（`PUI-COLLAPSIBLE-HEADER-CONFLICT`）。
+
+```xml
+<Collapsible id="tasks" width="150">
+  <Header>
+    <HStack anchor="stretch" padding="0,8" spacing="6">
+      <Icon name="ui:quest" size="14x14"/>
+      <Text width="stretch">任务</Text>
+      <Text id="count" tr="false">3</Text>
+    </HStack>
+  </Header>
+  <TaskRow .../>
+</Collapsible>
+```
+
+动态行不走 `itemTemplate`（v1 没有）——把 `<ScrollList height="clamp(_, hug, N)">` 当 body 子节点用。
+`<Animation on="expand" reverse-on="collapse">` 让行跟着面板进出（`expand` / `collapse` 现在也解析到
+`<Collapsible>`，见 [`reference/animations.md`](reference/animations.md)）。
+
+### `<Pages>`
+
+N 选 1 容器（Qt `QStackedWidget` / Flutter `IndexedStack`）：**每个直接子节点是一页，同一时刻只有 `selected` 那页 active**，其余页被停用（不销毁，`Get<T>` 路径不变）。给**代码切换**的页内子视图用——列表 ↔ 详情、表单 ↔ 结果、`Tab.bind` 的页里再分几层。玩家点的互斥用 `<TabBar>`；带手势 / 指示点的用 `<Carousel>`。
+
+```xml
+<Pages id="shop" selected="list" anchor="stretch">      <!-- selected 缺省 = 第一页 -->
+  <Frame id="list"   anchor="stretch">…</Frame>
+  <Frame id="detail" anchor="stretch">…</Frame>       <!-- 页不写 hidden -->
+  <ShopCart id="cart"/>                                <!-- 模板调用当页：id 写在调用上 -->
+</Pages>
+```
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `selected` | 页 `id` | 第一页 | 初始页。**运行期独占状态**（同 `isOn` / `expanded`）：C# `Show()` 过之后 ReSolve 不打回；没动过时 `selected.portrait=` 照常覆盖（要有基础值，`PUI-VARIANT-NO-BASE`） |
+
+规则（lint 同名代码，运行时 warning）：
+
+- **每页必须有 `id`**（`PUI-PAGES-CHILD-ID`）：没有 id 的页选不中，永远停用。
+- **页不写 `hidden`**——含 `hidden.<variant>` 和 `class=` 带进来的（`PUI-PAGES-CHILD-HIDDEN`）。页的 activeSelf 归容器，页上再声明一个初态就是两个主人（容器切过之后那个声明永远是假的）。想让某页在某变体下不出现 → `selected.<variant>=` 指别的页。
+- `selected`（基础值和每个变体值）必须是某页的 `id`（`PUI-PAGES-SELECTED`），否则第一页顶上。
+- 没有页（`PUI-PAGES-EMPTY`）；`<Add into="#pagesId">` 往 `<Pages>` 里加页不支持（`PUI-PAGES-ADD-TARGET`）：页是静态的，Add 块和容器会争同一个 activeSelf。
+- **纯容器**：没有 Graphic 也没有程序化表面，`color` / `sprite` / `radius` / `glass` 一律丢弃（`PUI-CONTAINER-VISUAL-ATTR`），`raycastTarget` 同理（`PUI-RAYCAST-TAG`）——要底就外面套 `<Frame>`。默认 anchor 同 `<Frame>`（没写 size 的轴 stretch）。不支持 `hug`（`PUI-HUG-TAG`，页是自由定位的）。
+- 页切换没有过渡动画（v1）；非初始页里的 `<Animation on="open">` 在页停用前就跑完了（同 `Tab.bind` 的页）。
+
+C# 侧：`screen.Get<Pages>("shop").Show("detail")` / `Selected` / `PageIds` / `OnSelectedChanged`，工具用 `screen.FindAll<Pages>()` 列出全部——见 scripting-promptugui-csharp → `Pages`。
+
+### `<Carousel>`
+
+水平翻页轮播卡容器：自动播放 + 拖动 + 无限循环 + 状态化指示点。卡片用 `itemTemplate` + C# `BindItems`（同 ScrollList / TabBar）或静态子卡。默认 `fill="true"` 每张卡排成视口大小，卡片**不能**写 `size`（`PUI-CAROUSEL-CARD-SIZE`）；`fill="false"` 切「居中选择器」——卡片用自身 `size`、邻卡两侧露出、焦点卡可放大(`edgeScale`)/相邻渐隐(`edgeAlpha`)。卡片始终不能写 `anchor` / `margin`（`PUI-LAYOUT-ANCHOR` / `PUI-LAYOUT-MARGIN`）。当前页 `current` 是**运行期独占状态**（resize / Variant / Theme 不重置）。**详见 [`reference/controls-carousel.md`](reference/controls-carousel.md)。**
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `itemTemplate` | tag / Template 名 | `Frame` | |
+| `interval` | 秒 | `5` | `0`=关自动播放 |
+| `loop` | bool | `true` | |
+| `transition` | 秒 | `0.3` | 吸附补间 |
+| `fill` | bool | `true` | `false`=居中选择器（卡用自身 `size`，邻卡露出）；仅 `false` 时 `spacing`/`edgeScale`/`edgeAlpha` 生效 |
+| `spacing` | px | `0` | 相邻卡间距（仅 `fill="false"`） |
+| `edgeScale` | float | `1.0` | 边卡缩放，焦点卡 1，按距中心插值（仅 `fill="false"`） |
+| `edgeAlpha` | float | `1.0` | 边卡不透明度，焦点卡 1，按距中心插值（仅 `fill="false"`） |
+| `softness` | int | `0` | 视口左右边缘羽化淡出宽度（写视口 `RectMask2D.softness.x`，设计单位）：靠近视口边缘的卡片**像素**渐隐——空间淡出（溶进背景），区别于 `edgeAlpha` 的整卡变暗。不被 `fill` 门控 |
+| `current` | int | — | 初始页；runtime-owned |
+| `dots` | anchor 关键字（如 `bottom-center`） | — | 空 / `none`=不显示；非法 → runtime 回退 `bottom-center` + `PUI-CAROUSEL-DOTS-ANCHOR` |
+| `dotSize` | `WxH` | `8x8` | |
+| `dotSpacing` | float | `6` | |
+| `dotMargin` | `T,R,B,L` | — | |
+| `dotSprite` · `dotSelectedSprite` | sprite | — | 形状 / 当前态换图 |
+| `dotColor` · `dotSelectedColor` · `dotHoverColor` · `dotPressedColor` | hex / CSS / token | — | 状态色 |
+| `dotTint` | `multiply` / `linear` | — | |
+| `dotTriSlice` | bool | `false` | 把单张 `dotSprite` 横向等比切成 3 段分摊到各点，整排连成一条（左帽 / 可平铺中段 / 右帽；2 点=左+右，N≥3=左+中×(N-2)+右）。sprite 须设计成 3 等宽段、中段可平铺、atlas 内不能旋转打包；源图 9-slice 边框按段保留；选中态走颜色无需额外切图 |
+
+### `<Scrollbar>`
+
+`<ScrollList>` / `<Dropdown>` 的滚动条**部件子元素**：写成宿主的**直接子元素**，不写就是默认条（库存 Scroll View 那根，逐像素一致）。节点本身就是 uGUI `Scrollbar`（轨道 Image + `Sliding Area` + `Handle`），宿主负责接线与朝向 —— ScrollList 的条跟着 `direction` 翻转（同一个节点），Dropdown 的条恒竖、随弹窗一起被克隆。
+
+```xml
+<ScrollList columns="4" cellSize="63x86" spacing="4">
+  <Scrollbar thickness="6" overlay="true" padding="1.5"
+             radius="pill" color="glass-primary-darker/0.6" borderWidth="0.4" borderColor="hud-edge-cyan/0.6"
+             handleRadius="pill" handleColor="hud-edge-cyan" handleGlow="3" handleGlowColor="hud-edge-cyan/0.6"/>
+</ScrollList>
+```
+
+两层、两套已知词汇：**轨道 = 控件主表面**（`sprite` / `color` 换皮，`radius` / `borderWidth` / `glow` / `glass`… 逐字同 `<Frame>`）；**滑块 = `handle*` 内层**（`handle` / `handleColor` / `handleRadius`，再加 `handleBorderWidth` / `handleBorderColor` / `handleGlow` / `handleGlowColor` —— 唯一给到描边与外发光的内层，仍无 `glass`）。几何四个：`thickness`（厚度，不叫 `width` / `height`）、`overlay`（压在内容上 / 视口让位）、`spacing`（与视口的距离，overlay 下无效）、`padding`（滑块四边内缩，`"E,S"` = 沿轴, 跨轴）。
+
+排版属性（`anchor` / `size` / `width` / `height` / `margin` / `pivot` / `flow` / `scale` / `hidden`）一律 `PUI-SCROLLBAR-LAYOUT-ATTR`；不接子节点；一个宿主一根（`PUI-SCROLLBAR-DUPLICATE`）；不在宿主直下 `PUI-SCROLLBAR-OUTSIDE`；`<Add>` 块里不支持。复用走现成机制：属性 = `<Style>` + `class=`（一个包穿三根条），结构 / 参数 = 普通 `<Template>`（body 根就是 `<Scrollbar>`，在宿主里当子元素调用），主题 = `<Theme>` 里的同名包。宿主上旧的 `scrollbar` / `scrollbarColor` / `scrollbarHandle` / `scrollbarHandleColor` / `scrollbarWidth` / `scrollbarOverlay` **已退役**（`PUI-SCROLLBAR-RETIRED-ATTR`，`<Style>` 包里也报）。
+
+**写任何 `<Scrollbar>` 前，先读 [`reference/controls-scrollbar.md`](reference/controls-scrollbar.md)**（完整属性表、几何公式、三种复用写法、Dropdown 克隆的限制、lint 表）。
+
+### `<Decor>`
+
+宿主的**非排版装饰**叶子标签：一个节点按 `at=` 展开成 N 个实例（一张卡的四角括号是**一个**元素，不是四个）。`kind="bracket"`（角括号）/ `"tick"`（指示三角，尖端朝外）/ `"line"`（沿边强调线）由 SDF 绘制，`kind="sprite"` 画贴图（`.pxl` 纹样等，**自动镜像**：只画左上角 / 底边一份，其余槽位由库翻转/旋转），`kind="none"` 全部隐藏（主题去装饰的通道）。
+
+装饰自己只负责画和摆，其余全用既有机制组合：状态门控 = `<Show on="state-*">` 包裹，换皮 = `class=` 属性包，平台差异 = `at.mobile=` 等 Variant 覆盖。
+
+尺寸属性叫 **`extent`** 不叫 `size`（`size` 是通用排版属性，先被 `ApplyCommon` 吃掉；而装饰节点恒定铺满宿主，给它写排版属性一律报 `PUI-DECOR-LAYOUT-ATTR`）。定位只由 `at` / `inset`（正向内、负向外）/ `offset`（沿边平移）表达，锚在宿主**矩形**上——不贴合 `cut` / `hexagon` 的斜边轮廓。
+
+**写任何 `<Decor>` 前，先读 [`reference/decor.md`](reference/decor.md)**（含完整属性表、镜像约定配图、五条 lint、合批成本）。
+
+### `<Show>`
+
+无视觉 wrapper（Trigger 派生）。其子树**仅在**最近祖先 `<Btn>` / `<Tab>` / `<Toggle>` 处于 `on="state-*"` 态时可见，否则隐藏（`SetActive`，不销毁——隐藏子树 + R3 订阅存活）。同一 source 下的兄弟 `<Show>` 互斥；无显式 `<Show>` 的状态回退到 `state-normal` 块。仅 `state-*` 合法（其它如 `on="click"` 报错）。裸 `state-*` 需 `<Btn>` / `<Tab>` / `<Toggle>` 祖先（`PUI-STATE-NO-SOURCE`）。按状态换美术，见 [`reference/states.md`](reference/states.md)。
+
+| 属性 | 类型 / 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `on` | `state-normal` / `state-hover` / `state-pressed` / `state-selected` / `state-disabled`（各支持 `@<id>`） | — | 必填；`state-selected` 仅 `<Tab>` / `<Toggle>` source 有意义（`<Btn>` 不 emit） |
+
+### `<Icon>`
+
+References a sprite from a project-level SpriteSet (shared icons, by-name lookup, package-time pruning).
+
+```xml
+<Icon name="ui:settings" color="#ffffff"/>
+<Icon name="art:gold-coin" size="48x48"/>
+<Icon name="ui:bell" color.dark="#fff"/>
+```
+
+| Attribute | Required | Default   | Notes                                                                                                                                                                                                                                                                                                                |
+| --------- | -------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`    | yes      | —         | Format `ns:icon-name`. `ns` (set name) is strict `[A-Za-z0-9_-]+`; `icon-name` mirrors the filesystem path under `sourceFolder` (no extension) — `/`-separated, may contain spaces, `&`, parens, commas, apostrophes, etc. Only the `:` delimiter is forbidden. Example: `solar:Bold Duotone/Map & Location/Radar 2`. **Runtime-owned** (like `isOn`): a code-written `Icon.Name` survives resize / Variant / Theme; an untouched icon still follows `name.<locale>=`. |
+| `color`   | no       | `#ffffff` | Multiply tint on the underlying Image. White preserves a colored PNG; non-white tints a mono-mask PNG; gradient stop positions / hints render here too                                                                                                                                                                                                                |
+| `size`    | no       | `native`  | Numeric / `WxH` / `native` (Icon-only — reads sprite pixel dimensions). For "fill the parent" use `anchor="stretch"` (free-positioning) or wrap the Icon in a V/HStack and use `width="stretch"` / `height="stretch"` (LayoutGroup)                                                                                  |
+| `rotation` | no      | `0`       | Clockwise degrees, mesh-level — see **Rotation & flip** under `<Image>`                                                                                                                                                                                                                                             |
+| `flip`    | no       | `none`    | `x` / `y` / `xy` / `none`, mesh-level — see **Rotation & flip** under `<Image>`                                                                                                                                                                                                                                     |
+| `blur` | no | `0` | px radius; softens the icon itself — see **Blur & glow** under `<Image>` |
+| `glow` | no | `0` | px radius; outer glow cast from the icon's silhouette — see **Blur & glow** |
+| `glowColor` | no | its own colour | solid colour, or `self` / `self/0.5` (its own colour at a strength); unwritten, the glow takes the icon's own blurred colour |
+| `intensity` | no | `1` | `≥ 1`; lights body and glow together — white-hot core, hued halo. See **Blur & glow** |
+
+**Discovering available icons** — 要查项目里有哪些 `setName:icon-name` 组合、以及 icon 名如何解析（相对 sourceFolder 路径、bare basename 简写、Template-Param 替换、sync 工具行为），见 [`reference/icons.md`](reference/icons.md)。
+
+**Inline icons inside text** (`<sprite name="coin">` 图文混排，行内跟随文字换行) — tick **Generate Tmp Sprite Asset** on a SpriteSet, re-sync, then use native TMP `<sprite>` markup in any `<Text>` / `<Btn text>`; see [`reference/icons.md`](reference/icons.md) → "Inline sprites in text".
+
+### Safe area
+
+Wrap UI in `<SafeArea>` and put a `margin` on it to control inset. Per-edge `inset = max(designMargin_i, Screen.safeArea_i)` — the safe-area inset absorbs the design margin (not adds to it), so the same XML looks right on PC and on notched devices:
+
+```xml
+<Screen name="Lobby">
+  <Image anchor="stretch" color="#08152C"/>           <!-- bleed background, sibling of SafeArea -->
+  <SafeArea margin="6,6,6,6">
+    <HStack id="topIcons" anchor="top-stretch" height="24"
+            margin="0,0,_,_" spacing="4" childAlign="middle-right">...</HStack>
+  </SafeArea>
+</Screen>
+```
+
+- PC (no inset): you get exactly the `margin` you wrote (here, 6px on each edge).
+- Notched device: the safe-area inset wins where it's bigger than your margin. E.g. iPhone 14 Pro (top inset ≈ 134, bottom ≈ 132 device px, sf=1): top=134, right=6, bottom=132, left=6.
+- Design margin wins past the inset: `<SafeArea margin="200,_,_,_">` on the same device gives top=200 (your design value is bigger than 134).
+- Unspecified edges (`_` or shorter than 4 components) default to 0 → that edge fully absorbs the device inset.
+
+Other notes:
+
+- `<SafeArea>` still rejects `anchor` / `size` / `width` / `height` / `pivot` (and their `.variant` forms). The container is always stretched to its parent; only `margin` is author-controlled.
+- One `<SafeArea>` per `<Screen>`. Backgrounds that need to bleed past the safe area stay as siblings of `<SafeArea>`, not children.
+- For "fixed gap below the safe area" (e.g. always 16px below the notch, never flush), nest a `<Frame anchor="stretch" margin="16,_,_,_"/>` inside the `<SafeArea>` instead of using the SafeArea's own margin.
+- Don't put `<SafeArea>` inside `<VStack>` / `<HStack>` / `<Grid>` — the layout group will override its anchor math.
+- Reacts automatically to screen rotation, window resize, Unity 6's Device Simulator, and Dynamic Island animations. No code-side wiring needed.
+
+## uGUI 对照表
+
+每个 PromptUGUI tag 在运行时落成一组 GameObject + Unity 组件。调试时在 Hierarchy 里按这张表把 XML 节点和实际 GO 对上；理解控件原理时把 XML 当成「这套 GO + 组件 + 默认绑线」的简写。
+
+**Tag → GO 结构 / 组件**
+
+| Tag            | 根节点组件                                                                                                                                                                                                                                                     | 自动子节点                                                                                                                                                                                                                                                                             | R3 事件源                                                                                                                   |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `<Frame>`      | `RectTransform` 单独；可选 `RectMask2D`（写 `mask="rect"` 时挂）或 stencil `Mask`（`mask="self"`，用自绘的 `ProceduralPanel` 当 mask 形状）                                                                                                                                                                                               | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<Image>`      | `Image` + (lazy) `PointerEventRelay`（被 hover/press trigger 引用为源时挂上）；`rotation`/`flip` 非恒等时挂 `RotateFlipEffect`(`BaseMeshEffect`, internal)；可选 `RectMask2D`（`mask="rect"`）或 stencil `Mask`（`mask="self"`，用自身 sprite 作 mask 形状）                                                                                | —                                                                                                                                                                                                                                                                                      | `OnPointerEnter` / `OnPointerExit` / `OnPointerDown` ← Relay                                                                |
+| `<RawImage>`   | `RawImage` + (lazy) `PointerEventRelay`；可选 `AspectRatioFitter`（`type=contain/cover`）/ `RectMask2D`（`mask="rect"`）/ stencil `Mask`（`mask="self"`）；图源 = C# `Texture` 属性                                                                            | —                                                                                                                                                                                                                                                                                      | `OnPointerEnter` / `OnPointerExit` / `OnPointerDown` ← Relay                                                                |
+| `<Text>`       | `TextMeshProUGUI`                                                                                                                                                                                                                                              | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<VStack>`     | `VerticalLayoutGroup`（硬编码 `childControlWidth/Height=true`、`childForceExpand*=false`）                                                                                                                                                                     | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<HStack>`     | `HorizontalLayoutGroup`（同 VStack）                                                                                                                                                                                                                           | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<Grid>`       | `GridLayoutGroup`（`constraint=FixedColumnCount`）                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<Btn>`        | `Image` + `Button`（`targetGraphic=Image`）+ (lazy) `PointerEventRelay`                                                                                                                                                                                        | `Label`(`TMP_Text`, stretch 撑满) — **lazy**：写了 `text=` 才创建                                                                                                                                                                                                                      | `OnClick` ← `Button.onClick`；`OnPointerEnter/Exit/Down` ← Relay                                                            |
+| `<Icon>`       | `Image`（`preserveAspect=true`, `raycastTarget=false`）                                                                                                                                                                                                        | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<Toggle>`     | `Toggle`（`targetGraphic=Background`, `graphic=Checkmark`）                                                                                                                                                                                                    | `Background`(`Image`, left-middle 锚 20×20) → 内嵌 `Checkmark`(`Image`, 居中 20×20)；`Label`(`TMP_Text`, 右侧水平 stretch)                                                                                                                                                             | `OnValueChanged` ← `Toggle.onValueChanged`                                                                                  |
+| `<Slider>`     | `Slider`                                                                                                                                                                                                                                                       | `Background`(`Image`)；`Fill Area` → `Fill`(`Image`)；`Handle Slide Area` → `Handle`(`Image`)                                                                                                                                                                                          | `OnValueChanged` ← `Slider.onValueChanged`                                                                                  |
+| `<Dropdown>`   | `Image` + `TMP_Dropdown`                                                                                                                                                                                                                                       | `Label` + `Arrow` + `Template`（默认 inactive，内含 `Viewport` / `Content` / `Item` / `Scrollbar` 完整下拉子树；`Scrollbar` 是 `<Scrollbar>` 部件，默认条由库自建）                                                                                                                                                                       | `OnSelected` ← `TMP_Dropdown.onValueChanged`                                                                                |
+| `<ScrollList>` | `Image` + `ScrollRect`                                                                                                                                                                                                                                         | `Viewport`(`Image` + `Mask` stencil) → `Content`(V/H `LayoutGroup` + `ContentSizeFitter`)；加一个 `Scrollbar`（`<Scrollbar>` 部件：认领的子元素或库自建的默认条，按 `direction` 翻转朝向）                                                                                                                                                         | 无独立事件；C# 端 `BindItems(...)` 推数据                                                                                   |
+| `<InputField>` | `Image` + `TMP_InputField`                                                                                                                                                                                                                                     | `Text Area`(`RectMask2D`) → `Placeholder`(`TMP_Text`, italic 半透明) + `Text`(`TMP_Text`)                                                                                                                                                                                              | `OnValueChanged` / `OnEndEdit` / `OnSubmit` ← `TMP_InputField.*`                                                            |
+| `<Progress>`   | `RectTransform`（无 Graphic）                                                                                                                                                                                                                                  | `MaskWrapper`(`RectTransform`; 按需挂 `UnityImage` + `Mask`) → `Bg`(`Image`, 按需启用) + `Fill`(`Image`, 永远存在)；`Frame`(`Image`, 按需启用, `raycastTarget=false`)                                                                                                                  | —                                                                                                                           |
+| `<TabBar>`     | `ToggleGroup` + `HorizontalLayoutGroup`（或 `VerticalLayoutGroup` 看 `direction=`）；无自身视觉，纯布局容器                                                                                                                                                    | XML 写的或 `BindItems` 推的 `<Tab>` children；视觉由 Tab 自管,共享样式靠 Template                                                                                                                                                                                                      | `OnSelectionChanged` ← per-Tab `OnValueChanged`（推选中的 Tab；选中清空时推 `null`）                                        |
+| `<Carousel>`   | `RectTransform` + `CarouselView`（UIBehaviour，挂在 root；拖动事件从子卡冒泡上来）                                                                                                                                                        | `Viewport`(`UnityImage`+`RectMask2D`) → `Strip`(`RectTransform`，卡片的 parent)；`Indicator`(`RectTransform` + `HorizontalLayoutGroup`，点排)；每个 dot = `RectTransform`+`UnityImage`+`PuiButton`+`StateTintReactor` | 无独立 R3 事件；C# 端 `OnCurrentChanged: Observable<int>` + `BindItems(...)` |
+| `<Collapsible>` | `UnityImage`(面板底) + `VerticalLayoutGroup`(排 Header / Body) + `ExpandableMarker`；程序化表面挂在这一层 | `Header`(`UnityImage` + `PuiButton` + `LayoutElement`) → `Icon` / `Label` / `Arrow`(+`RotateFlipEffect`) / `Host`(`<Header>` 槽,懒建)；`Body`(`RectMask2D` + `CanvasGroup` + `HugElement` + `LayoutLink`,按需 `ScrollRect`) → `Content`(`VerticalLayoutGroup` + `ContentSizeFitter`) | `OnExpanded` / `OnCollapsed` / `OnToggled: bool`；`OnState` ← Header 的 `PuiButton` |
+| `<Tab>`        | `UnityImage`（bg, `targetGraphic`, supports `overrideSprite` swap while selected）+ `UnityToggle`（`graphic` 未设；配 `selectedSprite` 时 `transition=None`，否则 `transition=ColorTint`）；Toggle 的 `group` 在 `OnAttached` 用 transform-ancestor walk 找 TabBar 的 `ToggleGroup` | 可选 `Label`(`TMP_Text`, stretch fill, `Center` 对齐, raycast off, 懒建—写了 `text`/`fontSize`/`font` 才有)；可选 `Icon`(`Image`, 左 16px + 24×24, 懒建)；外加任意作者子节点（Frame 式叠放在 bg 上）；无 Overlay 自动子节点 | `OnValueChanged: bool` / `OnSelected: Unit`（只在 isOn=true 时 fire）                                                       |
+| `<SafeArea>`   | `RectTransform` + `SafeAreaTracker`（内部 `MonoBehaviour`，订阅设备 safeArea / 旋转 / Device Simulator）                                                                                                                                                       | —                                                                                                                                                                                                                                                                                      | —                                                                                                                           |
+| `<Pages>`      | `RectTransform` 单独（无视觉、无 layout 组件）；直接子节点即页，容器只切它们的 activeSelf（Open 期的停用延到量算之后，同 `Tab.bind`）                                                                                                                          | —                                                                                                                                                                                                                                                                                      | `OnSelectedChanged: string`（新页 id；含 Variant 重应用，同值不发）                                                          |
+| `<Trigger>`    | `RectTransform` 单独（无视觉、无 layout 行为，仅作 wrapper 划定事件源 scope）                                                                                                                                                                                  | —                                                                                                                                                                                                                                                                                      | `OnFire` ← R3 `Subject<Unit>`，由 `on=`（open/loop/click/hover-enter/hover-exit/press/manual）触发                          |
+| `<Animation>`  | `RectTransform` + `CanvasGroup`（继承自 Trigger；CanvasGroup 给 `fade=` 用，由 `ApplyCommon` 懒加载）                                                                                                                                                          | `_offsetProxy`(`RectTransform`，anchor stretch、margin=0、pivot=0.5,0.5) — XML 子节点全 parent 到这一层；LitMotion 驱动它的 anchoredPosition / localScale / localEulerAngles；`reveal=` 另在 LayoutHost 上挂 `RectMask2D`(非静止时 enabled) 并写该轴的 `LayoutElement` / `sizeDelta`                                                                                                           | `OnFire` ← 继承 Trigger；同时由 `on=` 触发 LitMotion `MotionHandle[]`                                                       |
+| `<Show>`       | `RectTransform` 单独（继承自 Trigger；无视觉、无 layout）— 仅是一个按状态 `SetActive` 切换的 wrapper                                                                                                                                                           | —（作者子节点直接挂在它下面，整组随状态显隐）                                                                                                                                                                                                                                          | `OnFire` ← 继承 Trigger；不订阅 `OnState`，由最近 `<Btn>`/`<Tab>`/`<Toggle>` 祖先（`IStateSource`）的状态协调器统一驱动显隐 |
+
+**Common attribute → uGUI 落点**（实现在 `Control.ApplyCommon`；对所有 tag 生效，`<SafeArea>` 例外，整套 anchor/size/width/height/pivot 都被拒绝）
+
+| XML                         | uGUI 落点                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `anchor`                    | `RectTransform.anchorMin` / `anchorMax`，并按 anchor 推导默认 `pivot`                                                                                                                                                                                                                                               |
+| `size` / `width` / `height` | 父级不是 LayoutGroup：经 `MarginResolver` 写到 `RectTransform.sizeDelta`。父级是 `<VStack>` / `<HStack>`：写到 `LayoutElement.preferredWidth` / `preferredHeight` + 对应 `flexible*=0`（按轴路由，未写的轴留 `-1` 哨兵）。父级是 `<Grid>`：**被 GridLayoutGroup 接管**（cellSize 由 parent 决定，子节点写了也无视，lint `PUI-GRID-CHILD-SIZE`） |
+| `margin`                    | `RectTransform.anchoredPosition` + `sizeDelta`（`MarginResolver` 按 anchor 自动反号；stretched 轴专门吃 margin）                                                                                                                                                                                                    |
+| `pivot="x,y"`               | `RectTransform.pivot`（不写则从 anchor 推）                                                                                                                                                                                                                                                                         |
+| `hidden="true"`             | `GameObject.SetActive(false)`                                                                                                                                                                                                                                                                                       |
+| `interactable="false"`      | `CanvasGroup.interactable=false`，**不动 `blocksRaycasts`（保持默认 `true`）**——禁用子树仍**吃**点击、不会穿透到背后的 backdrop（标准 Unity 禁用语义）。首次访问按需 add `CanvasGroup`；`interactable` 级联到所有后代，比 `Selectable.interactable` 范围更大。想要"禁用即点击穿透"得自己对该 `CanvasGroup` 设 `blocksRaycasts=false`（如 Toast overlay） |
+| `flow="false"`              | `LayoutElement.ignoreLayout=true`（仅父级是 LayoutGroup 时有意义）—— LayoutGroup 收集 rectChildren 时跳过该子节点，`anchor` / `margin` / `size` 改走自由定位分支写 RectTransform                                                                                                                                       |
+
+**不变量与易踩坑**
+
+- 容器根上**都没有** `Image`,所以 `sprite=` 在它们上面一律无效。要 **sprite 底图**有两种写法,**优先用前者**:(1) 背景区域跟内容同区 → 直接拿 `<Image>` 当容器: `<Image sprite="...">...content...</Image>`(`<Image>` 是普通 Control,允许子节点,少一层节点);(2) 背景比内容更大(整屏底图 + 居中面板这类) → `<Image anchor="stretch"/>` 当**兄弟**放在内容之前(`<SafeArea>` 是唯一不可见还必须用兄弟模式的特例,因为它的 RectTransform 已经被 safeArea 偏移占用)。
+- 要**纯色 / 圆角 / 描边 / 内外发光**这类无图素底,直接写在 `<Frame>` 上(`color` / `radius` / `borderWidth` / `glow` / `innerGlow`,见 `<Frame>` 小节)——`<Frame>` 自己会画。`<*Stack>` / `<Grid>` / `<SafeArea>` 仍然只管排版、画不出任何东西,要底就外面套一层 `<Frame>`。
+- `<Btn>` 的 Label 是 lazy：写 `<Btn/>`（无 `text=`、无子 `<Text>`、无内联文本）不会有 Label 子 GO；之后 C# 设 `BtnInstance.Text = "x"` 才会现场补一个。
+- `<Toggle>` 的 `targetGraphic` / `graphic` 在 `OnAttached` 内已绑死（Background / Checkmark），外部别再设；`group=` 不直接绑 Unity `ToggleGroup`，而是落到 `Screen.ToggleGroups.GetOrCreate(name)` 这个 Screen 范围的共享池里。
+- `<ScrollList>` 的 item 子节点在 `OnAttached` 阶段是空的，必须在 C# 端 `BindItems(observable, (slot, item) => ...)` 之后才出现；hot-reload 后也要重新 Bind。
+- `font="<type>"` 不是字体文件路径，而是 `PromptUGUISettings.fonts[]` 登记的**字体类型 key**（如 `"default"` / `"title"`），通过 `ResolveFont(locale, type)` 才解析到 `TMP_FontAsset`，并在 `UI.Locale.Changed` 时自动重赋。每个 type 还可在 Settings 里挂一个**可选的 TMP material preset**（如描边/发光）：`font="outline"` 这类 type 的 font 槽留空会继承该 locale `default` 的字体、只换 material，于是「同字体 + 不同材质」无需在 XML 里加任何属性。
+- 内置 `<Image>` / `<Btn>` / `<Toggle>` / `<Slider>` / `<Dropdown>` / `<ScrollList>` / `<InputField>` 的 `sprite=` 走 `UI.ResolveSprite(value)` 双语法分流:含 `:` 的值(`sprite="ui:dialog"`)走 `UI.SpriteResolver` → SpriteSet/atlas 通道(包时按 XML scan 剪枝);无 `:` 的值(`sprite="ui/dialog"`)走 `Resources.Load<Sprite>(value)`(适合一次性 / 原型期 sprite)。bare path 支持 `#sliceName` 后缀,从多 sprite 切片纹理里按名取子 sprite,例如 `sprite="PromptUGUI/Defaults/pugui.png#pugui_9slice_round"` 走 `Resources.LoadAll<Sprite>(path)` 找 `name==sliceName`;`#` 之前的 `.png`/`.jpg`/`.jpeg`/`.tga`/`.psd` 扩展名会被剥掉,写不写后缀都行。`<Icon>` 仍强制 `ns:name` 形式,只走 SpriteResolver 通道。自定义 Control subclass 用同一 `UI.ResolveSprite(value)` 入口即可。**空值 `sprite=""` 与关键字 `sprite="none"` 等价**——都不解析任何贴图、把该 `sprite=` 所驱动的图清成 `null`,对所有内置控件及走同一入口的自定义 Control 一致生效。对自带默认 9-slice 底的 `<Btn>` / `<Tab>`,这会移除默认底、让控件退化为纯色实心矩形(颜色仍由 `color=` 控制;要透明就把 `color` 的 alpha 设 0,如 `color="#00000000"`);`<Toggle sprite="none">` 清的是 checkmark 图(box 底另算),`<Image sprite="none">` 清的是 Image 自身的图。`<Tab>` 的 `selectedSprite="none"` / `selectedSprite=""` 则表示"无 overrideSprite swap"（纯 no-op，不创建任何覆盖层）。
+
+## Common attributes (any tag)
+
+| Attribute | Format | Notes |
+|---|---|---|
+| `id="..."` | string | Unique within Screen / Template instance scope. Lift to dedicated handle for `Get<T>`. Inside a `<Template>` write a **literal** id — never `id="{{param}}"` (id is not substituted); instances are isolated per call. |
+| `anchor="..."` | preset | See "Anchor system" below. Default `top-left`. |
+| `size="WxH"` | `240x80` | Both dimensions in pixels (numeric only — keywords `stretch` / `N%` are **not** accepted here, use per-axis attrs). **Forbidden on stretched axes.** |
+| `width="W"` / `height="H"` | float / `stretch[*N]` / `N%` / `hug` / `clamp(min, N%\|stretch\|hug, max)` | Numeric is base. `stretch` / `stretch*N` is LayoutGroup-only — see "Stretch keyword". `N%` is free-positioning-only — see "Fractional %". `hug` sizes the control to its own content — see "Hug". `clamp(...)` puts a floor / cap on any of them — see "Clamp". **Numeric forbidden on stretched anchor axes.** |
+| `margin="..."` | 1/2/4 floats | Distance from anchor inward, positive. `"_"` = 0 placeholder. **4-component order `top,right,bottom,left`** (1 = all sides, 2 = `vertical,horizontal`). A margin only offsets from a side the `anchor` **consumes** — see **margin & consumed sides** below. |
+| `pivot="x,y"` | `0..1, 0..1` | Defaults derive from `anchor`; rarely needed. |
+| `class="a b"` | style names, space-separated | Pulls in `<Style>` attribute packs. Inline attributes win; later classes beat earlier ones. See **Style & class**. |
+| `hidden="true"` | bool | Initial `SetActive(false)`. **Runtime-owned** once code writes `Hidden` (same contract as `isOn`): a resize / Variant / Theme ReSolve never snaps a code-written value back; an untouched node still follows `hidden.<variant>=` and its theme's `<Style>`. So write the real initial state here (a preview that only loads the XML shows it) and let C# take over. Undeclared = never written (no self-heal — a `.variant` form needs a base, `PUI-VARIANT-NO-BASE`). |
+| `interactable="false"` | bool | **Runtime-owned** once code writes `Interactable` (as `hidden`); undeclared = `true`, re-applied on an untouched node so a base-less `interactable.mobile=` still heals. Initial `CanvasGroup.interactable=false`, leaving `blocksRaycasts=true` — a disabled subtree still **absorbs** clicks, never passing them through to a backdrop behind it (standard Unity disabled semantics; for click-through set `blocksRaycasts=false` on the CanvasGroup yourself, as the Toast overlay does). On `<Btn>` it **also** sets `Button.interactable=false` → the Btn enters its Disabled state (see `reference/states.md`). |
+| `stateReact="false"` | bool (default `true`) | Opts this node **and its whole subtree** out of an ancestor `<Btn>` / `<Tab>` / `<Toggle>`'s `*Modulate` fan-out. Has no effect on `*Color` (absolute — bg only, never fanned out). See `reference/states.md`. |
+| `flow="false"` | bool (default `true`) | **Layout-group children only** (direct child of `<VStack>` / `<HStack>` / `<Grid>`). Opts the child **out of the layout flow**: the group neither positions it nor counts it toward its own preferred size, and `anchor` / `margin` / `N%` regain full free-positioning semantics against the group's rect. Use for a 9-slice background layer / badge / overlay inside a hug-sized stack — see **Out-of-flow children** below. Inert under a free-positioning parent (`PUI-FLOW-OUTSIDE-GROUP`). Variant-overridable (`flow.portrait="false"`). |
+| `scale="N"` / `scale="Nx"` / `scale="<r>r"` | float `N` / `Nx` (int) / `<r>r` (float) | Three forms: `N` = box-preserving (a render-density knob, **not** a resize knob); `Nx` = N physical px per design-unit (constant across factors, **doesn't grow with the window**); `<r>r` = `r×` the canvas factor **snapped to an integer** (**grows with the window yet stays pixel-aligned**). `scale="2"` ≠ `scale="2x"`. Full formulas / examples / caveats: see **Relative scale** / **Device-density** / **Canvas-relative snapped** below. |
+| `focus="true"` | bool | **Selectable controls only** (`<Btn>` / `<Tab>` / `<TabMenu>` / `<Collapsible>` / `<Toggle>` / `<Slider>` / `<Dropdown>` / `<InputField>` / `<ScrollList>`). Marks this control as the initial EventSystem selection when the Screen opens in Directional navigation mode. First `focus="true"` in document order wins. Does NOT apply to `BindItems`-generated dynamic controls. No-op when `UI.UseGamepadNavigation()` has not been called. → [`reference/navigation.md`](reference/navigation.md) |
+| `nav="none"` | `"none"` | **Selectable controls only.** Removes the control from the directional navigation graph — arrow keys / gamepad skip it entirely (neither focused to nor from). The control remains clickable via pointer. |
+| `navUp` / `navDown` / `navLeft` / `navRight` | element `id` | **Selectable controls only.** Explicit directional-navigation override: pins the neighbor in that cardinal direction. Unspecified directions auto-fill geometrically (writing only `navDown="id"` does NOT dead-end up/left/right). Missing or inactive-variant `id` → silently falls back to geometric (no runtime throw; inactive-block targets self-heal on the activating ReSolve); CLI `PUI-NAV-UNKNOWN-TARGET` catches typos statically. Variant-overridable (`navDown.mobile="id2"`). → [`reference/navigation.md`](reference/navigation.md) |
+
+**Template invocations and nav attributes:** `focus` and `nav*` are **not** in the auto-merge set for Template invocations (unlike `anchor` / `size` / `margin` / `hidden` / `interactable`). Writing them directly on an invocation throws a `TemplateException` ("unknown attribute") at expansion time. Expose them via `<Param>` instead — e.g. `<Param name="focus" default="false"/>` in the template, then `focus="{{focus}}"` on the selectable root in the body. → [`reference/navigation.md`](reference/navigation.md)
+
+**margin & consumed sides.** A margin only offsets from a side the `anchor` **consumes**: a **stretched** axis reads both its slots, a **point** anchor (`top` / `bottom` / `left` / `right`) reads only its own side, a **centered** axis reads neither. So `anchor="bottom-right" margin="60,_,_,_"` puts 60 in the **top** slot → silently dropped (a `bottom` anchor reads only the bottom slot; write `margin="_,_,60,_"` to push it up). The lint CLI flags a non-zero value on an unconsumed side as **`PUI-MARGIN-INERT-SIDE`** (CLI-only; 4-component + explicit-`anchor` form only — symmetric 1-/2-component shorthands always land on the consumed side and are not flagged).
+
+`spacing` is **NOT** universal — only on `<VStack>` / `<HStack>` / `<Grid>`. `padding` is **per-control, not a common attribute** (each control that wants it declares its own): a layout-group inset on `<VStack>` / `<HStack>` / `<Grid>` / `<ScrollList>` / `<TabBar>`, and on `<InputField>` it means the inner space between the field edge and its text (auto-tracks the border — see the `<InputField>` row).
+
+`anchor` and `margin` are **NOT** available on `<VStack>` / `<HStack>` / `<Grid>`.
+
+## Pointer hit-testing (`raycastTarget`)
+
+**Hit-testing is declared, not painted.** Only two kinds of node are ever returned by the raycaster: an interactive control's own hit layer (`<Btn>` / `<Toggle>` / `<Tab>` / `<Slider>` / `<Scrollbar>` / `<Dropdown>` / `<InputField>` / `<ScrollList>` / `<Collapsible>` / `<TabMenu>` / `<Carousel>` / `<Markdown>` links — always on, not configurable), and a node you marked `raycastTarget="true"`. Everything else is click-through by default, **including a `<Frame>` that draws, an `<Image>`, a `<RawImage>` and a `<Text>`** — uGUI's own default (`true`) is not the library's.
+
+- **A panel that must block what is behind it says so on its root**: `<Frame color="…" radius="…" raycastTarget="true">`. One line per panel. Its interactive children still work — a child draws on top of its ancestor and a click on a non-interactive spot bubbles up to the panel and stops there (`EventSystem.IsPointerOverGameObject()` is then true, so the game world does not see the tap). The catcher must be an **ancestor** (or an earlier sibling); a later sibling covers what it overlaps.
+- **A modal needs two declarations**: the full-screen backdrop and the dialog panel (see **Modal / Loading screens**).
+- **Decorations write nothing** (default `false`) — an overlay gradient, a glow layer, a card thumbnail, a label. Write `raycastTarget="false"` explicitly only where the lint asks you to decide (below) or to override a `class=` that carries `true`.
+- **A transparent catcher** is `<Frame raycastTarget="true">` with no visual attribute: it attaches a zero-geometry panel (no overdraw) that the raycaster still returns. Do not write `<Image color="#00000000">` for this any more.
+- **`<Image>` / `<RawImage>` as pointer-event sources** turn themselves on: `<Trigger on="hover-enter@id">` / `press@id` and a C# `OnPointerEnter` / `OnPointerExit` / `OnPointerDown` subscription both flip `raycastTarget` to true. An explicit `raycastTarget="false"` on such a source wins and is reported once — the events can never arrive.
+- `raycastTarget` is an ordinary attribute: it travels through `<Style>` / `class=`, Variants (`raycastTarget.portrait="true"`) and `<Theme>` overrides like any other, and is cleared per pass — a variant-only `raycastTarget.mobile="true"` turns off again when the variant leaves.
+- `interactable="false"` does not change any of this: it flips `CanvasGroup.interactable`, not `blocksRaycasts`, and a `CanvasGroup` cannot create a hit area — a subtree with no raycast target blocks nothing.
+- Procedural controls (`<Btn radius="8">`, a `<Tab color="…">`) are hit on their SDF surface; there is no invisible Image under it any more.
+
+Lint: `raycastTarget` on any other tag is `PUI-RAYCAST-TAG` (layout containers have no Graphic; `<Icon>` / `<Decor>` / `<Progress>` are always click-through; interactive controls are not configurable). The CLI also raises **`PUI-RAYCAST-UNDECIDED`** for the **outermost drawn surface** on each path from the Screen root that carries no `raycastTarget` — a panel that never said whether it blocks. Write `true` (a panel) or `false` (a decoration); inside a `true` node or an interactive control nothing more is asked, under a `false` one the next drawn surface is. CLI-only (nothing is logged at `UI.Open`), one or two per screen in practice: the panel roots and the modal backdrop.
+
+**Inside `<VStack>` / `<HStack>`**, a child's explicit `size` / `width` / `height` is written to `LayoutElement.preferredX` **and `minX`** with `flexibleX=0` (not to `sizeDelta`). So `<Btn size="64x64"/>` inside a VStack is **strictly 64×64** — the layout group will neither stretch **nor shrink** it: the pinned `minX` means even a space-constrained group can't compress it (it overflows the group instead). This is what keeps a fixed-size trailing control at full size — e.g. an edit `<Btn size="12x12"/>` after an intrinsic-width `<Text>` in an `<HStack>`: when the text grows past the available width, the text (whose `minWidth` stays 0) gives way (compresses / ellipsizes), the button does **not**. Only `stretch` / `stretch*N` (`minX` stays `-1`, shrinkable to 0) and the native-fallback axes below remain compressible. **Per-axis native fallback** (CSS `inline-block` 直觉): each axis the author omits is independently filled from the control's intrinsic content size, so `<Btn width="100"/>` keeps `preferredWidth=100` and gets `preferredHeight=44` (Btn's default). Controls that report a native size: `<Btn>`、`<Toggle>`、`<Icon>`、`<Dropdown>`、`<Slider>`、`<ScrollList>`、`<InputField>`、`<TabMenu>`、`<Collapsible>`(caption 宽 + 标题栏高)；`<Image>` 当 sprite 非空时 (e.g. `<Btn>OK</Btn>` widens to fit text + padding, default height 44; `<Toggle>静音</Toggle>` widens to fit text + 28 padding, default height 44; `<Dropdown/>` defaults 160×44; `<InputField/>` defaults 160×44; `<Slider/>` defaults 160×44 horizontal or 44×160 vertical; `<ScrollList/>` defaults 160×200 vertical or 200×160 horizontal; `<Image sprite="..."/>` defaults to `sprite.rect.size / pixelsPerUnit`); the native-filled axis keeps `flexibleX=-1` (the LE "no opinion" sentinel) so an intrinsic `ILayoutElement` can still contribute. 无 sprite 的 `<Image/>` 拿不到 native → 那一轴回到 `preferredX=-1` 哨兵，看自带 `ILayoutElement` 报告，空状态多半 0，要可见自己写 size。
+
+**`<Text>` 是这条规则的例外 —— 在 V/HStack 里它不拍 native 快照。** Because TMP_Text is itself a live `ILayoutElement`, every axis the author omits is left at the `-1` sentinel so TMP drives it **dynamically**: a fixed-width or `width="stretch"` `wrap="true"` `<Text>` grows its **height to fit the wrapped content** (multi-line, and it re-measures whenever the text changes); a bare `<Text>Hi</Text>` with both axes omitted is sized entirely by TMP (no `LayoutElement` is attached). So **auto-height multiline labels come for free — just leave `height` off** (no placeholder-text trick needed). To pin a fixed height instead, write an explicit `height=`. (This only applies inside `<VStack>` / `<HStack>`; in free-positioning — next paragraph — `<Text>` still uses its native size, since `sizeDelta` is set once and an omitted-size label would otherwise be invisible.)
+
+**Inside `<Frame>` / `<Screen>` / `<SafeArea>` (free-positioning)**, a child's `size` / `width` / `height` is written to `RectTransform.sizeDelta`. **Per-axis native fallback**：`anchor` 该轴不 stretch + 该轴没写 size + 控件有 intrinsic content size（`<Btn>`、`<Toggle>`、`<Icon>`、`<Dropdown>`、`<Slider>`、`<ScrollList>`、`<InputField>`(默认 160×44)、`<TabMenu>`(hug caption，最小高 44)、`<Collapsible>`(宽=caption；高恒为标题栏+body，与 native 无关)；`<Text>` 当 text 非空时取 TMP `preferredWidth/Height`；`<Image>` 当 sprite 非空时取 `sprite.rect.size / pixelsPerUnit`）→ 该轴 `sizeDelta` 用 native 兜底（避免 0 不可见）；写了的那一轴保留作者值。例：`<Text height="12">Lv. 45</Text>` 在 Frame 里 → 高 12 固定、宽按 TMP `preferredWidth` 自适应。空文本 `<Text/>` / 无 sprite 的 `<Image/>` 整体保持 `sizeDelta=(0,0)`，得自己写 `size` 或 `anchor="stretch"` + `margin`。
+
+**`<Frame>` 默认 anchor 按轴 fill-or-fit**: 作者**没写** `anchor=` 时，Frame 按 size 是否存在分轴决定 —— 写过 `size`/`width`/`height` 的轴默认 top/left + 用作者写的值；没写的轴默认 stretch（填满父）。`<Frame/>` 两轴都 stretch（fill parent），`<Frame width="100"/>` X 轴固定 100、Y 轴 stretch，`<Frame size="100x50"/>` 两轴都 top-left 固定。镜像 CSS 块流：`<div style="width:100px">` 高度按 `auto` 撑开。**显式写 `anchor=`** 仍按原规则严格校验（`anchor="stretch"` + size attr 仍是 parse error）。其他控件维持 `(top, left)` 默认。
+
+**Frame 在 `<VStack>` / `<HStack>` 里的 cross 轴也自动 fill**：上一条 anchor 默认对自由定位生效；放进 LayoutGroup 时 anchor 被接管，PromptUGUI 把同一份"按轴 stretch"意图沿用到 `LayoutElement` —— `<VStack><Frame height="180"/></VStack>` 的 Frame 横向 `preferred=0, flexible=1` 自动撑满 VStack 宽度，`<HStack><Frame width="180"/></HStack>` 同理纵向撑满。Btn/Toggle 等 `(top, left)` 默认的控件不受影响（在 VStack 里仍按 native preferred 宽显示，不会被强行拉满）。
+
+**Stretch keyword** (LayoutGroup-only) — `width="stretch"` / `height="stretch"` on a V/HStack child maps to `LayoutElement.preferredX=0, flexibleX=1`. The LayoutGroup grows the child to fill that axis.
+
+- Multiple sibling stretches share remaining space by equal weight (`flexibleX` is additive). Two `stretch` siblings → each gets half.
+- **Weighted form** `stretch*N` for non-equal splits. `<Frame width="stretch"/> <Btn width="stretch*2"/> <Frame width="stretch"/>` gives a 1:2:1 weight split → 25/50/25. `N` must be > 0 (e.g. `stretch*0.5` halves the weight).
+- Forbidden outside V/HStack (parse error). Use `anchor="X-stretch"` + margin for free-positioning, or `N%` for fractional sizing.
+- Variant-overridable: `width="240" width.mobile="stretch"` flips between fixed and flex.
+- Need a floor or a cap? `clamp(min, stretch, max)` is the only shrinkable range — a plain number is rigid (`min = preferred`), `stretch` has no cap. See "Clamp".
+
+**Fractional `%`** (free-positioning only) — `width="50%"` / `height="33.3%"` on a child of `<Frame>` / `<Screen>` / `<SafeArea>` maps to uGUI's native anchor fractions. The `anchor=` preset decides where in the parent the fraction sits:
+
+| `anchor` horizontal   | `width="50%"` becomes                         |
+| --------------------- | --------------------------------------------- |
+| `*-left`              | anchorMin.x=0, anchorMax.x=0.5 (left half)    |
+| `*-center` / `center` | anchorMin.x=0.25, anchorMax.x=0.75 (centered) |
+| `*-right`             | anchorMin.x=0.5, anchorMax.x=1 (right half)   |
+
+Vertical: same idea (`top` → upper, `bottom` → lower, `center` → middle).
+
+```xml
+<Frame anchor="top-stretch" height="60">
+  <Btn anchor="center"      width="50%" height="46"/>             <!-- 50% wide, centered -->
+  <Btn anchor="center-left" width="30%" height="46" margin="0,16,0,16"/>  <!-- left 30% minus 16px each side -->
+</Frame>
+```
+
+- Range `(0%, 100%]`. `0%` / `>100%` are parse errors (almost always a typo); `100%` is allowed but equivalent to `anchor=stretch` on that axis.
+- `margin` further insets _within_ the fractional range (so `width="50%" margin="0,16"` = 50% minus 32px total, still centered).
+- Forbidden inside `<VStack>` / `<HStack>` / `<Grid>` (parse error with guidance). LayoutGroup is weight-based, not percentage-based — use `stretch*N` + spacer siblings there.
+- Forbidden combined with `anchor="X-stretch"` on the same axis (existing "stretched-axis can't have width" rule).
+
+**Clamp — a floor / cap on a `%` or `stretch` axis** — `width="clamp(min, middle, max)"` / `height="clamp(...)"`. `middle` is one of the two variable forms above and keeps its placement rules; clamp only adds a lower and/or upper bound (CSS `clamp()`). `_` opens a bound.
+
+```xml
+<!-- chat panel: 46.4% of the parent, never narrower than 167 nor wider than 250 -->
+<Frame class="panel" anchor="bottom-left" width="clamp(167, 46.4%, 250)" height="clamp(200, 55%, 400)"/>
+<Frame anchor="bottom-left" width="clamp(_, 46%, 250)"/>        <!-- cap only -->
+<Frame anchor="top-center"  width="clamp(320, 60%, _)"/>        <!-- floor only -->
+
+<!-- inside a stack: LayoutElement(min=167, preferred=250, flexible=0) -->
+<HStack anchor="bottom-stretch" height="400">
+  <Frame class="panel" width="clamp(167, stretch, 250)"/>
+  <Frame width="stretch"/>                                      <!-- spacer takes the rest -->
+</HStack>
+
+<Frame width="clamp(167, 46.4%, 250)" width.landscape="250"/>   <!-- a Variant swaps the whole axis -->
+```
+
+Free-positioning — `clamp(min, N%, max)` on a child of `<Frame>` / `<Screen>` / `<SafeArea>` (or a `flow="false"` child):
+
+- `box = clamp(N% × parent, min, max)`; `margin` insets _inside_ the box (same rule as plain `%`). While the value is in range the geometry is bit-identical to `width="N%"`.
+- The box hugs the edge the `anchor` names: `*-left` → left edge, `*-right` → right edge, `center` → centered. A capped `bottom-left` panel stays glued to the left; it does not float inside its 46% span.
+- Re-solved on every parent resize — window, orientation, Variant, SafeArea, animation, popup — by a layout pass (`ILayoutSelfController`), not by a ReSolve. In EditMode tests call `Canvas.ForceUpdateCanvases()` / `LayoutRebuilder.ForceRebuildLayoutImmediate` to observe the clamped size.
+
+Inside `<VStack>` / `<HStack>` — `clamp(min, stretch, max)`:
+
+| Form                       | `LayoutElement.min` | `preferred` | `flexible`          |
+| -------------------------- | ------------------- | ----------- | ------------------- |
+| `clamp(min, stretch, max)` | min                 | max         | 0                   |
+| `clamp(_, stretch, max)`   | −1                  | max         | 0                   |
+| `clamp(min, stretch, _)`   | min                 | 0           | 1 (`stretch*N` → N) |
+
+- A sole child (or one next to a `width="stretch"` spacer) gets exactly `clamp(available, min, max)`. Several shrinkable siblings shrink together in proportion to their `(preferred − min)` (flex-shrink). On the cross axis (`height="clamp(...)"` in an HStack) the child clamps against the group's inner size the same way.
+- The only shrinkable range in a stack: a plain number is rigid (`min = preferred`), `stretch` has no cap.
+
+Rules:
+
+- `min ≤ max`, both finite and ≥ 0; at least one bound (`clamp(_, 46%, _)` is an error — write `46%`); `middle` must be `N%` or `stretch` (a constant needs no clamp); `stretch*N` only with an open max (a weighted stretch cannot be capped).
+- Placement follows the middle term: `clamp(min, N%, max)` inside a stack and `clamp(min, stretch, max)` under a free-positioning parent raise the `%` / `stretch` placement errors, which now point at the other form. `size=` stays numeric-only.
+- **Not combinable with `scale` on the same node** — `PUI-CLAMP-SCALE`, a CLI error and a hard error at `UI.Open` (base or any variant, either attribute): the clamped axis is owned by the layout pass, which would drop `scale`'s box-preserving inflation. Put `scale` on a child (wrap the content).
+- Under the hood: free-positioning → an internal `ClampFitter` component on the node; in a stack → plain `LayoutElement` values, no component.
+
+**Hug — size to content** — `height="hug"` / `width="hug"` makes a container exactly as big as what is inside it. This is the axis you reach for when a panel should end where its rows end.
+
+```xml
+<!-- a HUD panel that is as tall as its rows, whatever the row count -->
+<VStack id="tasks" anchor="top-right" width="150" height="hug" spacing="4" margin="90,20,_,_">
+  <Image anchor="stretch" flow="false" sprite="ui:panel"/>   <!-- the skin follows the hug -->
+  <TaskRow/><TaskRow/><TaskRow/>
+</VStack>
+
+<!-- a list that is as tall as its rows, but never taller than 200 — then it scrolls -->
+<ScrollList id="list" itemTemplate="TaskRow" width="150" height="clamp(_, hug, 200)"/>
+
+<HStack width="hug" height="44" spacing="4">…</HStack>       <!-- as wide as its buttons -->
+<VStack height="200" height.portrait="hug">…</VStack>        <!-- Variant-switchable -->
+```
+
+**Only on the tags that HAVE a content size**: `<VStack>`, `<HStack>`, `<Grid>`, `<ScrollList>`. Everywhere else it is `PUI-HUG-TAG` (CLI error + a hard error at `UI.Open`), because there is nothing to measure: a `<Frame>`'s children are free-positioned (wrap them in a `<VStack>` and hug that), and a leaf's "content size" is what `size="native"` already means.
+
+| Where | What hug means |
+| --- | --- |
+| `<VStack>` / `<HStack>` / `<Grid>` | the group's own preferred size — padding + spacing + the children's preferred sizes |
+| `<ScrollList>` | the content node's preferred size, i.e. the rows — not the viewport it currently is |
+
+- **Free-positioning parent** (`<Frame>` / `<Screen>` / `<SafeArea>`): `box = clamp(content, min, max)`, and the box hugs the edge the `anchor` names — a `top-*` panel grows downward, a `bottom-*` one upward, `center` grows both ways. `margin` **positions** the box off the edge it names — exactly what it does for a numeric `height="40"` — and never eats into it (unlike `%` / `clamp(min, N%, max)`, whose box is a share of the parent and therefore insets). Recomputed by the layout pass, so it follows content changes (a `BindItems` re-emit, a wrapped line, a locale switch) within the same canvas update — in EditMode tests call `Canvas.ForceUpdateCanvases()` to observe it.
+- **Inside a `<VStack>` / `<HStack>`**: a bare `hug` on a layout-group container is exactly the "axis omitted" path spelled out — the group already reports its own preferred size — so it costs nothing and reads better. On a `<ScrollList>`, or with bounds (`clamp(min, hug, max)`), an internal element publishes the (clamped) content size as a **rigid** preferred size (`min = preferred`, `flexible = 0`): a hug size is a computed constant, not a range. That is the difference from `clamp(min, stretch, max)`, which is the one shrinkable range.
+- **A `stretch` child on the hugged axis collapses to 0** — the parent asks its children how big they want to be and a stretch child answers "nothing, plus whatever is left over", of which there is none. `PUI-HUG-STRETCH-CHILD` catches it; give the child a size instead.
+- **Not combinable with `scale` on the same node** — `PUI-HUG-SCALE`, same reason and same remedy as `PUI-CLAMP-SCALE`.
+- `size="hug"` is an error (`size=` stays numeric-only); `hug` on an `anchor="stretch"` axis is the usual stretched-axis error.
+
+**Cross-axis alignment** of layout-group children is set on the parent via `childAlign` (defaults: VStack `upper-center`, HStack `middle-left`). Override the whole group, not per child — uGUI LayoutGroup doesn't support per-child cross-axis alignment.
+
+**Out-of-flow children (`flow="false"`)** — a `<VStack>` / `<HStack>` / `<Grid>` child with `flow="false"` opts out of the layout flow entirely: the group skips it when positioning children **and** when computing its own preferred size (`LayoutElement.ignoreLayout` under the hood). The child positions itself against the group's rect with normal free-positioning semantics — `anchor` / `margin` / `N%` are legal again (no `PUI-LAYOUT-ANCHOR` / `PUI-LAYOUT-MARGIN`; `PUI-MARGIN-INERT-SIDE` applies again instead). `width="stretch"` stays forbidden — out of flow there is no flex weight; use `anchor="stretch"`.
+
+The killer use case: a **hug-width stack with a 9-slice skin**. Nested stacks hug for free — a width-less `<HStack>` inside a `<VStack>` is sized to padding + spacing + the sum of its children's preferred widths (no ContentSizeFitter needed) — so put the skin **inside** the stack as out-of-flow stretch layers:
+
+```xml
+<VStack anchor="stretch" margin="8,8,_,8" spacing="4" childAlign="upper-left">
+  <!-- timeBox hugs: width = padding + icon 12 + spacing 4 + scaled text width, live -->
+  <HStack id="timeBox" height="18" spacing="4" padding="3,6,3,3">
+    <Image anchor="stretch" flow="false" sprite="UI:Box-Secondary-Frame" color="primary-dark" tint="linear"/>
+    <Image anchor="stretch" flow="false" sprite="UI:Box-Secondary-Bg" mask="self" color="primary-darken/0.5" tint="linear"/>
+    <Icon name="Solar16Bold:Time/Clock Circle" color="on-primary" size="12x12"/>
+    <Text id="time" fontSize="12" color="on-primary" scale="0.5r" tr="false">18天 05:26:45</Text>
+  </HStack>
+</VStack>
+```
+
+When the countdown text changes (or the locale swaps), the text's preferred width re-reports and `timeBox` re-hugs automatically; both background layers stretch over whatever that is without inflating it.
+
+- `flow="false"` under a free-positioning parent (`<Frame>` / `<Screen>` / `<Image>`) is inert → `PUI-FLOW-OUTSIDE-GROUP` (CLI error / runtime warning). anchor/margin already work there — just drop the attribute.
+- Variant-overridable: `flow.portrait="false"` pulls a child out of flow in one variant only; flipping back re-enters the flow (geometry re-resolves on the normal ReSolve path).
+- A `<Text scale=...>` child that is statically `flow="false"` (no variant override) skips the scale-host measuring wrapper — it isn't measured by the group; free-positioning scale semantics apply instead.
+
+## Layout group 放置配方（HStack / VStack）
+
+| 目标布局                        | HStack 写法                                                                                            | 关键                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| 顶部右侧工具栏（按钮数可变）    | `<HStack anchor="top-stretch" height="<H>" margin="T,R,_,_" childAlign="middle-right" spacing="<S>">`  | **首选**。横跨整行，childAlign 推到右；加减按钮无需改 stack |
+| 顶部左侧工具栏                  | `<HStack anchor="top-stretch" height="<H>" margin="T,_,_,L" spacing="<S>">`                            | 默认 `childAlign="middle-left"`，无需声明                   |
+| 顶部居中工具栏                  | `<HStack anchor="top-stretch" height="<H>" margin="T,R,_,L" childAlign="middle-center" spacing="<S>">` | 或固定宽：`anchor="top-center" width="<W>"`                 |
+| 顶部铺满（按钮等分整行）        | `<HStack anchor="top-stretch" height="<H>" margin="T,R,_,L">` + 每个 child `width="stretch"`           | child 用 `stretch*N` 实现 1:2:1 等加权                      |
+| 左 logo + 右按钮组（split bar） | `<HStack anchor="top-stretch" ...>` body：`<Image .../>` → `<Frame width="stretch"/>`(spacer) → 按钮们 | spacer `width="stretch"` 吃光中间剩余空间                   |
+| 底部工具栏                      | 把顶部配方的 anchor 改 `bottom-stretch`、margin 改 `_,R,B,L`                                           | 镜像；childAlign 同样适用                                   |
+
+VStack 同理（纵轴，axis 翻转）：
+
+| 目标布局                   | VStack 写法                                                                                            | 关键                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| 右侧垂直按钮列（数量可变） | `<VStack anchor="stretch-right" width="<W>" margin="T,R,B,_" childAlign="upper-center" spacing="<S>">` | **首选**。纵向 stretch，childAlign 控顶/中/底 |
+| 右侧垂直按钮列（数量固定） | `<VStack anchor="top-right" width="<W>" height="<总高>" margin="T,R,_,_" spacing="<S>">`               | 总高 = Σchild + S×(N-1)                       |
+| 居中垂直菜单               | `<VStack anchor="center" width="<W>" spacing="<S>">`                                                   | 自由定位 + 不写 height，沿 children 自然展开  |
+
+⚠️ 反模式（lint / parser 不一定报但视觉上炸）：
+
+- `<HStack anchor="top-right" height="56">` 没写 `width=` → 0 宽 rect，子按钮全挤在一起。
+
+## Anchor system: 4×4 grid
+
+`anchor="<vertical>-<horizontal>"`:
+
+|             | left         | center         | right         | stretch        |
+| ----------- | ------------ | -------------- | ------------- | -------------- |
+| **top**     | top-left     | top-center     | top-right     | top-stretch    |
+| **center**  | center-left  | center         | center-right  | center-stretch |
+| **bottom**  | bottom-left  | bottom-center  | bottom-right  | bottom-stretch |
+| **stretch** | stretch-left | stretch-center | stretch-right | stretch        |
+
+Aliases: `center` = `center-center`; `stretch` = `fill` = `stretch-stretch`.
+
+**Hard rule (parse-time error if violated):** if an axis is `stretch`, you MUST use `margin` for that axis and MUST NOT supply `size` / `width` / `height` for it.
+
+```xml
+<!-- Top-right corner button, 16px from edges, 240x80 -->
+<Btn anchor="top-right" size="240x80" margin="16"/>
+
+<!-- Top toolbar, full width, 64px tall, 8px horizontal margin -->
+<Frame anchor="top-stretch" height="64" margin="0,8,_,8"/>
+
+<!-- Right side panel, full height, 200px wide -->
+<Frame anchor="stretch-right" width="200" margin="16,0,16,_"/>
+
+<!-- Full-screen background -->
+<Image anchor="stretch" sprite="bg/main"/>
+
+<!-- INVALID — stretched axis with size: parse error -->
+<Frame anchor="top-stretch" size="200x64"/>
+```
+
+`margin` semantics: always **inward from the anchor**, regardless of which corner. `top-right margin="16"` = 16px down + 16px left. The implementation handles sign conversion internally.
+
+## Style & class
+
+`<Style>` names a bag of attributes; `class="..."` pulls it onto a node. That is the whole feature — **not** a style engine: no selectors, no cascade, no inheritance. Because it is just attribute merging, it works on **every tag and every attribute** (including `.variant` suffixes), and nothing about it survives into the runtime tree.
+
+```xml
+<Style name="card" color="surface/0.85" radius="16" borderWidth="1" borderColor="stroke/0.15"/>
+<Style name="card-tight" radius="8" radius.mobile="4" padding="8,8,8,8"/>
+
+<Screen name="Home">
+  <Frame class="card" anchor="top-stretch" height="220" margin="16,16,_,16">…</Frame>
+  <Frame class="card card-tight">…</Frame>          <!-- 多 class：右覆盖左 -->
+</Screen>
+```
+
+**Declaring**
+
+- Top level only, alongside `<Import>` / `<Theme>` / `<Screen>` / `<Template>`. No children.
+- `name` is kebab-case `[a-z0-9-]`, unique per document.
+- Any attribute name is legal, `attr.variant` included. Four are rejected — `id` / `if` / `class` / `bind`: they identify a node or decide whether it exists, and a style is shared by many nodes. A style cannot reference another style; compose with multiple classes instead.
+
+**Merging** — precedence, highest first:
+
+```
+inline 属性  >  右边的 class  >  左边的 class
+```
+
+- **Atomic per attribute name.** Writing `radius=` inline claims the whole `radius` slot, so a style's `radius.mobile` does not sneak in beside it. Same when one class redeclares a name another class set.
+- A style's `.variant` entries merge into the node verbatim and resolve through the normal Variant machinery (last-active-wins).
+- **不适用即忽略**, like CSS: a control without that attribute silently drops it. One `card` style can dress a `<Frame>`, a `<Btn>` and a `<Text>`, each taking what it has.
+- On a **Template invocation**, the pack is filtered to that template's `<Param>`s plus the common attributes (`anchor` / `size` / `width` / `height` / `margin` / `pivot` / `padding` / `spacing` / `hidden` / `interactable`); anything else is dropped silently rather than raising the "unknown attribute" error an inline attribute would. Variant suffixes only pass through for common attributes.
+- `class="{{param}}"` inside a `<Template>` body is fine — the class name is substituted first, so a template can take its skin as a parameter.
+- `<Screen>` takes no `class` (it is not a control). `class=""` (no names) and an unknown style name are both errors.
+
+**`itemTemplate=` 也走完整展开**：`<ScrollList>` / `<TabBar>` / `<Carousel>` 用的模板体和别处一样会合并 `class=`、替换 `{{param}}`、内联嵌套模板调用。因为没有调用点提供实参，模板自己的 `<Param default=...>` 就是实参 —— 所以**当作 itemTemplate 用的模板，每个 `<Param>` 都必须有 `default=`**，否则 `UI.Open` 会直接报错说清楚是哪个模板的哪个参数。C# 侧的 `screen.Instantiate("Name", parent)`（见 scripting-promptugui-csharp → "Instantiating a template from C#"）走**同一条解析与同一条规则** —— 名字既可以是模板也可以是注册的 Control tag，模板的每个 `<Param>` 同样必须有 `default=`，只是报错落在调用那一刻而不是 `UI.Open`。
+
+**Sharing** works exactly like `<Template>`: styles travel through `<Import>` or through a common library (a row in `PromptUGUISettings → Common Libraries` — the `<Import>` every document implicitly has), hot-reload with their file, and a name colliding between commons and the entry document is a hard error. An unknown style name is caught by the lint tooling as `PUI-EXPAND` whenever it can read the imported files and the declared common libraries from disk; otherwise it surfaces at `UI.Open()` — and, in a project with no common library declared, that error says so, since a forgotten settings row is the usual cause. A namespaced commons library is referenced with a colon — `class="ui:card"` — mirroring the `Set:Name` form used for sprites and icons (tags use a dot, `ui.TitledPanel`; class references use a colon).
+
+Swapping which commons library is loaded therefore re-skins everything at once.
+
+### Theme-scoped styles
+
+A `<Theme>` may declare `<Style>` packs alongside its `<Color>` tokens. Because `class=` is an
+attribute macro, this gives a theme the **whole attribute surface** — sprite, radius, font size,
+padding, glass parameters — not just colours. Switching `UI.Theme.Current` re-derives every `class=`
+node and replays the attributes; **no GameObject is rebuilt**, so references and subscriptions live.
+
+```xml
+<Style name="card" sprite="ui:panel" color="surface/0.85" radius="16" borderWidth="1"/>
+
+<Theme name="modern">
+  <Color name="surface" value="#f7f8fa"/>
+</Theme>
+<Theme name="pixel" base="modern">
+  <Color name="surface" value="#e8d8b0"/>
+  <Style name="card" sprite="px:panel" radius="0" borderWidth="2"/>   <!-- only what differs -->
+</Theme>
+```
+
+That baseline `radius="16"` is correct here because `card` lands on a `<Frame>`, which has no sprite
+to lose. On an Image-backed control it would be wrong — see the shape exception below.
+
+**The global `<Style>` is the implicit root of every theme chain.** Folding order is
+`global → base= chain → active theme`, atomic per attribute name (same rule multiple classes get).
+Three consequences worth internalising:
+
+- A theme spells out only what differs; everything else comes from the global pack.
+- **Always declare the global `<Style>` with the full attribute set** — with one exception, below.
+  An attribute one theme sets and another doesn't is never reset on a switch — the control keeps the
+  old value. `PUI-THEME-STYLE-SHAPE` catches this; `PUI-THEME-STYLE-NO-BASELINE` catches a style that
+  exists only inside a theme (unreachable — `class=` resolves against the global pool).
+- A project with no theme styles costs exactly nothing; this is all opt-in.
+
+**Exception: never give a shape attribute a baseline on an Image-backed control.** On the controls listed
+under 程序化表面 (`<Btn>` `<Tab>` `<TabMenu>` `<Toggle>` `<Slider>` `<Dropdown>` `<InputField>` `<ScrollList>`
+`<Progress>`), `radius` / `glass` / `border*` / `glow*` / the glass parameters /
+`<layer>Radius` are **switches, not values**: writing one at all attaches the
+SDF face and retires the Image, whatever the value. So `radius=""` as a "baseline" does not mean
+"no radius", it means "this control is procedural in every theme" — and the bitmap skin loses its
+sprite (`PUI-PROC-SPRITE-CONFLICT` then reports the sprite as the contradiction it now is).
+
+Write the whole shape group in the theme that wants it, and **not one attribute of it** in the others:
+
+```xml
+<Style name="btn" sprite="px:btn" color="#E8D2A8"/>          <!-- pixel skin: shape IS the sprite -->
+
+<Theme name="pixel"><Style name="btn" color="#E8D2A8"/></Theme>
+<Theme name="glass">
+  <Style name="btn" sprite="none" color="white/0.22"
+         radius="10" glass="true" borderWidth="1" borderColor="white/0.55"/>
+</Theme>
+```
+
+`PUI-THEME-STYLE-SHAPE` exempts exactly this: `ProceduralSurface` recomputes the mode every pass, so
+a theme that omits the group turns the surface off and hands the Image back, sprite and alpha
+included — it reverts on its own. The exemption is **all-or-nothing**: a theme holding *half* the
+group pins the mode on, its missing half really does stick, and the rule reports the style again.
+`sprite` and `color` are deliberately NOT exempt — leave one of those to the control's built-in
+default in one theme and set it in another and you get a genuine residue.
+
+Two limits worth knowing:
+
+- **`<Frame>` does not self-heal.** It attaches its panel directly and never reconciles the mode per
+  pass, so a shape attribute one theme sets and another omits stays put. `PUI-THEME-STYLE-SHAPE`
+  cannot see which tag a `class=` lands on and will not warn you. On a Frame, declare the shape in
+  every theme (a global baseline is fine there — a Frame has no sprite to lose).
+- The controls' `<layer>Radius` attributes (`fillRadius`, `handleRadius`, `frameRadius`,
+  `maskRadius`) follow the same rule as the outer group: each drives one inner surface wholesale.
+
+**Rejected inside a `<Theme>`'s `<Style>`** (all parse errors; a global `<Style>` still accepts the
+last two groups):
+
+| Group | Names | Why |
+|---|---|---|
+| node identity | `id` `if` `class` `bind` | same as a global `<Style>` |
+| runtime-owned state | `text` `isOn` `value` `current` `expanded` `selected` | the applier stops replaying these once code sets them, so a theme's value would be swallowed *some* of the time |
+| mask family | `mask` `showMask` `maskPadding` | `PUI-MASK-VARIANT` already rejects switching mask mode per state; a theme must not be a second door into it |
+
+`hidden` / `interactable` are runtime-owned too but stay **allowed** in a theme's `<Style>` — switching
+skin layers with `<Style name="skin-glass" hidden="true"/>` is the CommonControls sample's idiom. The
+trade-off is the same as above, just accepted: a node code has touched stops following the theme
+until its Screen is reopened.
+
+**Don't put a themed `class=` on a Template invocation** (`<ui.Card class="skin"/>`): half the pack
+becomes `<Param>` values that get baked into the body at expansion, and the invocation node is gone
+afterwards, so nothing re-derives. Put the `class=` on a node **inside** the template body instead.
+`PUI-THEME-STYLE-ON-INVOCATION` flags it.
+
+**A theme names a style the way `class=` names it, namespace included.** A pack that arrives through
+an `<Import as="ui">` is `ui:card` everywhere, so that is what a theme writes to override it —
+re-skinning an imported library is exactly what themes are for:
+
+```xml
+<Theme name="pixel">
+  <Style name="ui:card" radius="0" borderWidth="2"/>   <!-- overrides the imported pack -->
+  <Style name="card"    radius="0"/>                   <!-- a DIFFERENT style: this document's own -->
+</Theme>
+```
+
+The namespace is part of the identity: `card` and `ui:card` never fold into each other. A **top-level**
+`<Style>` still takes a bare name — its namespace comes from the `as=` of whoever imports the
+document, never from the name it writes for itself, and a colon there is a parse error.
+
+## Templates
+
+```xml
+<Template name="TitledPanel">
+  <Param name="title"/>
+  <Param name="closable" default="true"/>
+
+  <VStack padding="16" spacing="8">
+    <HStack height="32">
+      <Text fontSize="20">{{title}}</Text>
+      <Btn if="{{closable}}" id="close" color="#888888"/>
+    </HStack>
+    <Slot/>
+  </VStack>
+</Template>
+```
+
+Rules:
+
+- `<Param>` must come **before** any body element. `default` makes the parameter optional; missing default = required.
+- Body must have **exactly one** root element (here: the outer `<VStack>`).
+- `{{paramName}}` substitutes inside attribute values and text content. **Pure string substitution** — no expressions, no `{{a + b}}`.
+- **`id` is never substituted — use instance isolation, not a param.** `id` is a dedicated handle stored apart from attributes, so `{{param}}` does **not** apply to it: `id="{{sendId}}"` stays the literal string `{{sendId}}`. You don't need a parameterized id anyway — each template invocation gets its **own isolated id scope**, so a hard-coded `id="send"` is collision-free even when the template is used many times. Reach an inner id from C# with the path form `instanceId/send` (give the **invocation** an `id`). See **scripting-promptugui-csharp**.
+- `if="{{p}}"` drops the element when the substituted value is falsy (empty, `false`, `0`, `null`). Only `if=` is allowed; no `else`, no `for`.
+- `<Slot/>` appears **at most once**. Children passed at the call site replace it.
+
+**Calling a template** is identical to using a built-in:
+
+```xml
+<TitledPanel id="bagPanel" anchor="center" size="600x400"
+             title="背包" closable="true">
+  <Grid columns="6" spacing="4" cellSize="64x64">
+    <Image sprite="icon/sword"/>
+    <Image sprite="icon/shield"/>
+  </Grid>
+</TitledPanel>
+```
+
+The grid (and its Image children) are injected at the `<Slot/>` position.
+
+## Variants: runtime layout switching
+
+Variants are named flags, **toggled C#-side** with `UI.Variants.Set("mobile", true)` (see scripting-promptugui-csharp). Multiple flags can be active simultaneously. Toggling re-applies attributes on all open Screens **without rebuilding GameObjects**.
+
+### Inline override — 90% of usage
+
+Append `.variantName` to **any** attribute. The base value applies when no variant is active; per-variant values override:
+
+```xml
+<VStack id="menu"
+        anchor="center" size="480x320"
+        anchor.mobile="bottom-stretch"
+        size.mobile="" height.mobile="400"
+        margin.mobile="_,16,80,16">
+  <Btn size="240x64"
+       size.mobile="" width.mobile="stretch" height.mobile="72">开始</Btn>
+</VStack>
+```
+
+The `size.mobile=""` clears the base `size=` under that variant — required because mobile flips one axis to anchor-stretch (`anchor.mobile="bottom-stretch"`), which forbids any width on the same axis. Per-axis `width.mobile=` / `height.mobile=` then provide the new dimensions cleanly.
+
+**Last-active-wins** — declaration order matters. With `<X size="100" size.mobile="200" size.tablet="150"/>`, if both `mobile` and `tablet` are active, `tablet` wins because it was declared after.
+
+Variant overrides on `<Icon name="...">` swap the sprite at runtime: `<Icon name="ui:sun" name.dark="ui:moon"/>`.
+
+**Pair a *control-specific* `.variant` override with a base value.**
+Otherwise lint cli will report `PUI-VARIANT-NO-BASE` on this.
+
+### Block form — only `<Add>`
+
+For inserting elements per variant (no `Remove`, no `Replace` — use `hidden.var="true"` and inline overrides instead):
+
+```xml
+<Screen name="Game">
+  <Frame id="root" anchor="stretch"/>
+
+  <Variant when="mobile">
+    <Add into="#root" at="end">
+      <Image id="virtualJoystick" anchor="bottom-left"
+             size="160x160" margin="_,_,40,40"/>
+    </Add>
+  </Variant>
+
+  <Variant when="pc">
+    <Add into="#root">
+      <Image id="minimap" anchor="bottom-right"
+             size="200x200" margin="_,16,16,_"/>
+    </Add>
+  </Variant>
+</Screen>
+```
+
+`<Add>`:
+
+- `into="#id"` targets a node by id; `into="@root"` targets the Screen root.
+- `at="start" | "end" | <integer>` — defaults to `"end"`.
+- Strategy: instantiated **once on first activation**, then only `SetActive`-toggled. Subscriptions and references survive variant flips.
+
+### Variants you CANNOT vary
+
+- `id` — identity must be stable
+- The tag name itself
+- `<Param default>` values
+
+Trying to write `id.mobile="..."` or `default.mobile="..."` is a parse error.
+
+## i18n & Fonts (XML markup)
+
+Source text goes directly inside `<Text>` / `<Btn>` and serves as the msgid for extraction. Translation happens at runtime — see the **scripting-promptugui-csharp** skill for the `UI.Locale.Set` / `UI.Tr` C# calls that switch language, and the **using-promptugui-addressables** skill if your `.po` files ship via Addressables.
+
+```xml
+<!-- Source text = msgid; zero keys -->
+<Text>Start Game</Text>
+<Btn>Settings</Btn>
+
+<!-- Do not translate -->
+<Text tr="false">{{playerName}}</Text>
+
+<!-- Same msgid, different meanings; ctx becomes msgctxt -->
+<Btn ctx="door">Open</Btn>
+<Btn ctx="file-menu">Open</Btn>
+
+<!-- Font type comes from Settings; default is "default" -->
+<Text font="title">Settings</Text>
+<Text font="damage" fontSize="96">9999!</Text>
+
+<!-- Combined with the existing Variant system -->
+<Text font="title" font.zh-Hans="title-cn">Settings</Text>
+```
+
+**Reserved variant namespace**: the library auto-manages two namespaces — authors must NOT reuse these names for business state:
+
+- **Locale**: `UI.Locale.Set("zh-Hans")` internally registers `zh-Hans` (any locale code passed to `UI.Locale.Set`) as an active Variant.
+- **Orientation**: `portrait` and `landscape` are toggled automatically by a global tracker based on `Screen.width` vs `Screen.height` (equal dims → `landscape`, an arbitrary but stable tiebreak — the two are mutually exclusive and one always holds). They are mutually exclusive. Use them as overrides — e.g. `<Screen reference="1920x1080" reference.portrait="1080x1920">`, `<Btn width="240" width.portrait="stretch"/>`. Portrait-locked games can ignore them (base values apply when no override exists, `landscape` overrides simply never fire). Users who want to fully self-manage can set `UI.Orientation.AutoTrack = false`.
+
+### Inline sprites / TMP rich text
+
+`<Text>` does not allow mixing text + child elements by default. To inline TMP tags like `<sprite>` / `<color>`, wrap them in CDATA:
+
+```xml
+<Text><![CDATA[Gold: <sprite name="coin"/>{{count}}]]></Text>
+<Text><![CDATA[<color=#ff0>Warning</color>: out of stock]]></Text>
+```
+
+The extractor pulls each CDATA block as a single complete msgid; runtime translation preserves the tags.
+
+## Import & namespaces
+
+```xml
+<Import src="common/Buttons.ui"/>          <!-- merge templates into local namespace -->
+<Import src="common/Panels.ui" as="ui"/>   <!-- prefix-qualified -->
+
+<Screen name="X">
+  <PrimaryButton/>          <!-- from Buttons (unqualified) -->
+  <ui.TitledPanel/>         <!-- from Panels, must use prefix -->
+</Screen>
+```
+
+- `src` is an opaque key passed to the user's `UI.SourceResolver` (`Func<string, Awaitable<string>>`) — could be a Resources path, an Addressables key, anything. The library never touches the filesystem itself.
+- **With the Resources resolver, `src` keeps the `.ui` and is relative to the resolver root.** Unity's Resources lookup name strips only the final extension, so `Resources/UI/Skin.ui.xml` is addressable as `UI/Skin.ui`; after `UseResourcesResolver("UI")` the root is prepended for you. So `src="Skin.ui"` ✓, while `src="Skin"` and `src="UI/Skin.ui"` both raise `IOException: Resources lookup failed: …`. `<Import>` uses the same key shape as `LoadDocumentAsync` — whatever your C# passes there, an Import next to it looks the same.
+- Imports merge **recursively**; cycles are detected.
+- Imported files cannot contain `<Screen>` — only `<Template>` / `<Style>` / `<Theme>`.
+- Same-named templates from two imports without `as=` → conflict error. Resolve with `as="ns"` on one of them. Styles behave the same way (`class="ns:name"` to reference a namespaced one).
+
+There's also a **commons pool** — the libraries declared in `PromptUGUISettings → Common Libraries` (`src` + optional `as`), merged into every Screen automatically as if each document had written that `<Import>` itself. The runtime loads them on the first `LoadDocumentAsync`; nothing is registered from C#. See scripting-promptugui-csharp.
+
+## Color Tokens
+
+Define named colors in `<Theme>` blocks; reference them by name in any color attribute.
+
+### Authoring
+
+```xml
+<UIDocument>
+  <Theme name="light">
+    <Color name="primary"   value="#ff8800"/>
+    <Color name="secondary" value="#0080ff"/>
+    <Color name="label-fg"  value="#222222"/>
+  </Theme>
+  <Theme name="dark" base="light">
+    <Color name="primary"  value="#cc6600"/>
+    <Color name="label-fg" value="#e6e6e6"/>
+    <!-- secondary inherits from base="light" -->
+  </Theme>
+</UIDocument>
+```
+
+- `<Theme>` MUST have `name`. Optional `base="other-theme"` makes missing tokens fall back along the chain.
+- `<Color>` MUST have `name` (kebab-case, `[a-z0-9-]`) and `value` (hex / CSS-named, anything Unity's `ColorUtility.TryParseHtmlString` accepts).
+- Theme XML loads as a common library (a row in `PromptUGUISettings → Common Libraries`, loaded on the first `LoadDocumentAsync`), or via `<Import src="themes/main.ui"/>` from any screen's `.ui.xml` — both register the same `ThemeStore`.
+- A `<Theme>` can also carry `<Style>` packs, which turns a theme from "swap the palette" into "swap the skin" — see **Theme-scoped styles** below.
+
+### Reference
+
+```xml
+<Image color="primary"/>
+<Text  color="label-fg" text="Hello"/>
+<Btn   color="primary"  label="Buy"/>
+```
+
+Resolution order at runtime: current theme token → walk `base` chain → fall back to literal `ColorUtility.TryParseHtmlString` → if all fail, `ParseException` with node context.
+
+### Shadow rule
+
+If you register a token named `red`, then `color="red"` resolves to that token (NOT the CSS named color `red`). Token always wins over literal when both could parse. CSS named colors are rare in game UI; this trade-off is documented.
+
+### Per-variant override
+
+`color.dark="..."` works as expected for variant overrides — value goes through the same token → literal resolution chain.
+
+### Alpha suffix (opacity)
+
+Append `/<0..1>` to any color **reference** to set its opacity. The suffix REPLACES the resolved color's alpha (Unity `Color.a` semantics, like Flutter `withOpacity`) — it does not multiply:
+
+```xml
+<Frame color="black/0.5"/>     <!-- black backdrop at 50% opacity -->
+<Image color="primary/0.8"/>   <!-- theme token's RGB, alpha forced to 0.8 -->
+<Text  color="#ff0000/0.3" text="faint"/>
+```
+
+- Works on **every** color-valued attribute (one resolution chokepoint): `color`, the state colors `hoverColor` / `pressedColor` / `selectedColor` / `disabledColor`, `*Modulate`, variant overrides (`color.dark="primary/0.5"`), and `<Animation char-color="primary/1:primary/0">` (fade out).
+- Replace, not multiply: a token whose own value carries alpha (e.g. `scrim = #00000080`) referenced as `scrim/1` comes out **fully opaque**.
+- Value is a `0..1` float. Out of range or malformed (`/1.5`, `/abc`, `/`, no color before `/`) → `ParseException` with node context. **Alpha is opacity, never brightness** — to make a surface *glow brighter than its colour*, use `intensity` (`<Frame>` family, `<Decor>`, `<Image>` / `<Icon>`), not `/2`.
+- Suffix is **reference-only**. Definition-side `<Color value="...">` does NOT take a suffix — bake alpha into the hex there (`value="#00000080"`) if you want a baked-alpha token.
+
+### Gradients
+
+A comma between colour values makes a **linear gradient**. Gradients are a value-syntax extension — no new attributes — and the grammar is CSS `linear-gradient`'s argument list, minus the function wrapper:
+
+```
+[direction,] colour [pos] [, hint] , colour [pos] [[, hint] , colour [pos]]{0,2}
+direction := <N>deg | to top | to right | to bottom | to left | to top left | to bottom right | …
+```
+
+- **Direction** — first segment only. Angles follow CSS: `0deg` up, `90deg` right, `180deg` down, `270deg` left. Omitted = `to bottom` (= `180deg`), the top→bottom ramp every gradient ran before directions existed. `to <corner>` is CSS's **magic corner**: the angle is computed from the box's aspect ratio so the named corner is exactly 0%, the opposite corner exactly 100%, and the other two corners sit exactly on the 50% line — on a wide panel `to bottom right` and `135deg` are visibly different, and the corner is what you want for "light the top-left and bottom-right corners".
+- **2 to 4 colours**, each an independent theme token / hex / CSS name with its own `/alpha`.
+- **Stop positions** (`A 70%`) and **colour hints** (a bare `30%` between two colours) — see below. Unwritten positions default the CSS way: first `0%`, last `100%`, middles spread evenly between the nearest written neighbours (`A, B, C 40%, D` = 0 / 20 / 40 / 100%).
+
+**Definition site** (`<Color value="...">` inside `<Theme>`): every colour must be a plain literal (hex or CSS-named). No theme tokens, no `/alpha` here — bake alpha into the hex if needed. Direction, positions and hints are shape, not colour, and are welcome:
+
+```xml
+<Theme name="default">
+  <Color name="gold-grad" value="#ffe08a,#b8860b"/>
+  <Color name="edge-lit"  value="to bottom right, #7ef3ff, #1c6d8a80 50%, #7ef3ff"/>
+</Theme>
+```
+
+**Reference site** (any colour attribute): each colour independently supports theme tokens, hex/named literals, and `/alpha`. You can mix:
+
+```xml
+<Text  color="gold-grad">Title</Text>                       <!-- token → gradient -->
+<Icon  color="white,#aaa"/>                                 <!-- two literals, inline -->
+<Image color="to right, accent, accent-dark/0.5"/>          <!-- direction + token + token/alpha -->
+<Frame color="45deg, #ffe08a, #b8860b"/>                    <!-- an angle -->
+<Frame borderWidth="1.5" borderColor="edge-lit"/>           <!-- three stops along the magic corner -->
+<Btn   borderColor="edge-lit/0.5"/>                         <!-- /alpha on a gradient token → EVERY stop's alpha replaced -->
+<Btn   borderColor="to right, hud-cyan, hud-cyan/0.3, hud-cyan"/>   <!-- bright ends, dim middle -->
+```
+
+**Where gradients work** — every attribute that paints a `Graphic`, and every SDF colour slot:
+- `color` on `<Image>` / `<Icon>` / `<RawImage>` / `<Btn>` / `<Tab>` / `<TabMenu>` (popup panel) / `<Collapsible>` (panel) / `<Toggle>` / `<Dropdown>` (+ `popupColor`) / `<Progress>` (`fillColor`, `bgColor`, `frameColor`) / `<ScrollList>` (`color`, `frameColor`) / `<Slider>` (`bgColor`) / `<InputField>` (bg only, see below) / `<Text>`
+- Absolute state colours: `hoverColor` / `pressedColor` / `selectedColor` / `disabledColor`
+- The procedural surface's other slots: `borderColor` / `glowColor` / `innerGlowColor` on `<Frame>` and every control that draws procedurally, `<Scrollbar>`'s `handleBorderColor` / `handleGlowColor`, `<Decor>`'s `color` / `glowColor`. All four slots of one surface share **one gradient line** over the layout rect — the same token on `color` and `borderColor` changes over on the same pixels.
+
+**Where gradients are NOT supported** (runtime error; static lint):
+- `*Modulate` attributes (`hoverModulate`, `pressedModulate`, `selectedModulate`, `disabledModulate`) — these are solid-only multipliers; a gradient value is rejected (lint `PUI-GRADIENT-MODULATE`)
+- `<Animation char-color="from:to">` — the per-character animation colour; each side is a solid
+- `<InputField>` `textColor` / `placeholderColor` / `caretColor` / `selectionColor` — caret/selection are TMP `Color` fields with no vertices; editable text stays solid
+- `<Carousel>` `dotColor` / `dotSelectedColor` — the dots stay solid
+- `<Image>` / `<Icon>` `glowColor` (the blur-based glow, not the SDF one) — solid or `self`
+
+**`<Text>` per-character gradient.** On `<Text>` the gradient is TMP-native and applied per-character — each glyph's four corners carry it independently. That gives a solid "gold-foil" title effect without a single stretched gradient across the text block. A **direction** works (two colours, any angle; a magic corner is evaluated on a square glyph, so it is the 45° family); a **third colour, a stop position or a hint does not** — four corners hold a two-colour linear ramp and nothing else (`PUI-GRADIENT-STOP-NO-SURFACE`, below).
+
+**Stop positions** — where a transition happens. Append a percentage after a colour, CSS `linear-gradient` style, measured **along the gradient line** from its start (from the top edge for the default direction). Omitted, the outer ones are `0%` and `100%`:
+
+```xml
+<Frame color="primary 70%, complement"/>       <!-- solid blue down to 70%, gold only in the last 30% -->
+<Frame color="primary 30%, complement 60%"/>   <!-- solid top 30%, solid bottom 40%, blend between -->
+<Frame color="primary 50%, complement 50%"/>   <!-- equal positions = a hard edge, two solid halves -->
+<Frame color="to right, red, yellow 30%, green 60%, blue"/>   <!-- four stops -->
+<Color name="panel-grad" value="#4a6fa5 70%,#c9a227"/>       <!-- definition site takes them too -->
+```
+
+Before the first position the first colour is solid; after the last the last colour is solid; between neighbouring stops it blends linearly. Positions may not decrease along the line (that is an error, not a silent clamp); equal neighbours are a hard edge.
+
+> **Stops and hints work on every graphic.** A procedural surface draws them per pixel in the SDF shader; every other `Graphic` gets them by having its mesh cut at each stop — perpendicular to the gradient direction — `<Image>` / `<Icon>` / `<RawImage>`, a control still drawing its Image, `<Progress>` fills, arrows, checkmarks. **TMP text is the one exception** (`<Text color>`, `textColor`, a Dropdown's `itemTextColor`): see above. Two things follow from cutting the mesh. An **end** colour that is fully transparent (`…, white/0 50%`) drops that part of the geometry outright — no overdraw, and no `mask="rect"` needed to crop it (a transparent *middle* stop is a seam inside the picture and drops nothing). And the ramp is evaluated on the mesh **as finally drawn**, so `rotation` / `flip` never change which end is "the start": the first colour is the start of what you SEE, whatever order the attributes are written in.
+
+**Colour hint — bias a blend without a seam.** A stop position *cuts* the ramp: before it the colour is flat, after it changes, and that slope discontinuity is read by the eye as a dividing line even though the colour itself is continuous. When you want "mostly the first colour, the second only creeping in near the end" with no visible seam, use CSS's **colour hint** instead — a bare percentage between two colours, meaning *these two are mixed half and half here*:
+
+```xml
+<Frame color="primary, 70%, complement"/>          <!-- smooth all the way down, biased to the bottom -->
+<Frame color="primary 20%, 60%, complement"/>       <!-- composes with stops: 60% is inside the 20%..100% ramp -->
+<Frame color="to right, a, 30%, b, c, 80%, d"/>     <!-- one hint per segment, any segment -->
+```
+
+A hint bends only its own segment into a power curve, so there is no kink anywhere. It sits in the same coordinate space as the stop positions, so a hint exactly midway between its two stops is the plain linear ramp, and it must lie between them. Rule of thumb: **stop positions when you want flat bands or a hard edge, a hint when you want a smooth bias.**
+
+**Gradient glow.** On a procedural surface an unset `glowColor` follows the **whole** fill ramp at full alpha — a `to right, red, blue` fill glows red on the left and blue on the right. The gradient line of every slot is the layout rect's; the halo drawn outside it simply holds the end colours. (`<Image glow>` is a different mechanism — a blur — and normalises its stops over the inflated quad instead.)
+
+**`<Decor>` frame.** A decoration's gradient runs in the decoration's own canonical frame, the one its shape is defined in, so mirrored instances mirror it — four corner brackets stay identical and keep sharing one material. → `reference/decor.md`
+
+**State-colour transition timing.** A state transition whose start or end colour is a gradient **snaps** immediately (no ~0.1s fade) — there is no colour-lerp for a vertex gradient. So does the state a control is **first shown in** (a control opened already disabled/selected — e.g. a modal `Configure` hook setting `Interactable = false` — shows that state on frame 1, not faded in from Normal). Other solid ↔ solid transitions still fade as before. See `reference/states.md` → *First-frame establishment*.
+
+### Error codes
+
+- `<Theme>: missing required attribute 'name'`
+- `<Color name="X" value="Y">: invalid color literal` — value didn't parse as hex and isn't a named color
+- `<Color name="X">: token name must be kebab-case [a-z0-9-]`
+- `<Theme name="X"> declares 'Y' twice`
+- `duplicate <Theme name="X"> in 'src1' and 'src2'` — same theme name declared in two source files
+- `<Theme name="X" base="Y">: base theme 'Y' not found`
+- `<Theme> base cycle starting at 'X': ...`
+- (Runtime, when value can't resolve) `<Image id='X'> attribute color="Y": unknown color token "Y" (no entry in theme 'Z', not a valid hex/named literal)`
+- (Runtime, bad alpha suffix) `color "black/1.5": alpha 1.5 is out of range — must be 0..1`
+- (Lint) `PUI-COLOR-LITERAL-INVALID` — static check: `color="#..."` literal that doesn't parse, or a hex literal with an out-of-range / malformed `/alpha` suffix
+- `<Color name="X" value="…">: gradient supports 2 to 4 colours ("A, B, C, D"), got 5` — also `gradient segment is empty` for `value="#fff,"`, `value=",#000"`
+- (Lint, CLI) `PUI-COLOR-GRADIENT-MALFORMED` — malformed gradient shape on a `color` attribute: too many colours, an empty segment, a misplaced direction or hint, decreasing stops (every parse-time message below)
+- (Lint, CLI) `PUI-GRADIENT-MODULATE` — a gradient value on a `*Modulate` attribute
+- (Runtime) `color "...": this attribute does not support gradient colors` — gradient on a solid-only attribute (`*Modulate`, caret/selection colours, etc.)
+- (Runtime) `color "...": token resolves to a gradient — gradients cannot nest inside a gradient` — one segment of a gradient reference resolves to another gradient token
+- (Lint, CLI + runtime warning) `PUI-GRADIENT-STOP-NO-SURFACE` — a gradient stop position / hint / **third colour** on TMP text (`<Text>`, `textColor`, `itemTextColor`), which paints per glyph and has nowhere to put one; a two-colour direction is fine (see *`<Text>` per-character gradient* above)
+- (Parse / runtime) `color "#fff 70": the stop position must be a percentage (e.g. "70%")`
+- (Parse / runtime) `color "#fff 120%": stop position 120% is out of range — must be 0%..100%`
+- (Parse / runtime) `color "#fff 70%": a stop position needs a two-colour gradient (e.g. "A 70%,B") — a solid colour has no transition point to move`
+- (Parse / runtime) `color "A 70%,B 30%": stop positions must not decrease along the gradient (70% then 30%)`
+- (Parse / runtime) `color "A, 70%": a colour hint must sit BETWEEN two colours ("A, 70%, B")`
+- (Parse / runtime) `color "A 40%, 20%, B": the hint must sit between the two stop positions of its segment (40%..100%)`
+- (Parse / runtime) `color "A,B,C,D,E": gradient supports 2 to 4 colours ("A, B, C, D"), got 5`
+- (Parse / runtime) `color "to right, #fff": a direction needs at least two colours ("to right, A, B")`
+- (Parse / runtime) `color "#fff, to right, #000": the direction must be the first segment ("to right, A, B")`
+- (Parse / runtime) `color "45deg #fff, #000": the direction must be its own comma-separated segment ("45deg, #fff, #000")`
+- (Parse / runtime) `color "to up, …": a direction is "<N>deg" or "to <side or corner>" — top / bottom / left / right, or a vertical + horizontal pair ("to bottom right")`
+- `<Color name="45deg">: token name reads as a gradient direction ("45deg") — pick another name`
+
+## Tint blend modes
+
+`tint=` chooses how a control's `color` combines with its sprite. Available on these controls: `<Image>`, `<Icon>`, `<Btn>`, `<Toggle>`, `<Slider>`, `<Dropdown>`, `<ScrollList>`, `<InputField>`, `<Progress>`, `<Tab>`, `<TabMenu>` (its popup panel), `<Collapsible>` (the whole panel). On `<Tab>` `tint` applies to the bg; since `selectedSprite` now swaps the bg's own sprite, the selected sprite is tinted too. Not supported on `<Text>` (TMP uses its own shader, not the UI Image shader).
+
+| `tint`               | Blend                                                                                                                                  | Use it for                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `multiply` (default) | `result = sprite × color` (Unity UI/Default). Omitting `tint` is identical to `multiply`.                                              | Normal colored sprites; darkening a sprite with `color`.                                     |
+| `linear`             | Linear Light — sprite is the blend layer, `color` is the base; **128-gray in the sprite is neutral**, darker → black, lighter → white. | Grayscale sprites you want to recolor across the full range (can brighten, not only darken). |
+
+```xml
+<!-- grayscale sprite recolored with Linear Light -->
+<Image src="card-grayscale" color="#ff8040" tint="linear"/>
+
+<!-- default multiply (unchanged from before) -->
+<Image src="card-color" color="#888888"/>
+```
+
+- `tint` is orthogonal to `color`: `color` can be a hex / CSS named / theme token; `tint` only picks the blend material.
+- On `<Progress>` it applies to the fill, background, and frame layers together.
+- Variants can switch it: `tint.dark="linear"` (goes through the normal `attr.var` → `ReSolve` path).
+- Unknown values warn and fall back to `multiply`.
+
+## Canvas / scaler attributes on `<Screen>`
+
+```xml
+<Screen name="MainMenu" canvas="overlay" reference="1920x1080">...</Screen>
+
+<!-- 横屏 PC + 竖屏手机一份 XML -->
+<Screen name="MainMenu"
+        reference="1920x1080"
+        reference.mobile="1080x1920">...</Screen>
+```
+
+- `canvas="overlay|camera|world"`, default `overlay`. Picks the runtime `Canvas.renderMode` for this Screen. Everything else (worldCamera, sortingOrder) is configured C#-side via `UI.CanvasConfigurator`.
+- `reference="WxH"` → CanvasScaler 切到 `ScaleWithScreenSize` + `screenMatchMode=Expand`，referenceResolution 即该值。Expand = `scaleFactor = min(屏宽/参考宽, 屏高/参考高)`：**更吃紧的那条边决定缩放**，所以整个参考矩形在任何宽高比下都放得下，设计不会被作者没预料到的屏幕比例裁掉（超宽显示器、比 16:9 更长的手机）。画布本身仍铺满屏幕（两轴测量值都 ≥ 参考尺寸），拉伸锚定的背景照常填满，富余落在更宽松的那条边上。
+- 未设 / `reference=""` → 保留默认 `ConstantPixelSize, scaleFactor=1` 行为；XML 数字直接 = 设备像素。
+- `.variant` 形态：`reference.mobile="..."` 同其他属性 variant 规则；变体切换时 CanvasScaler 立即重应用。
+- 要锁死某条边（`screenMatchMode=MatchWidthOrHeight` + `matchWidthOrHeight=0/0.5/1`）或改 `referencePixelsPerUnit`：走 `UI.CanvasConfigurator` 手改。**不要在两条路径同时改 CanvasScaler** —— variant flip 时 XML 路径会覆盖 configurator 的改动。
+- `scale-mode="auto|pixel"` (+ `.variant`)：默认 `auto` = 上面 `reference` 的连续缩放语义。`pixel` 切到 `ConstantPixelSize` + 整数倍 `scaleFactor`（fit-inside 取小；屏幕 < 设计时 snap 到 1/2、1/4、1/8 等保 2x2 干净降采样）。**必须配 `reference="WxH"`**，否则运行期 `Debug.LogError` 并降级 `scaleFactor=1`。像素美术 / 等距图项目用 —— sprite 永远整数倍渲染到屏幕像素。项目级默认走 C# `UI.DefaultScaleMode = ScaleMode.Pixel`；具体 Screen 想退回连续缩放写 `scale-mode="auto"`。
+
+### Relative scale (`scale="N"`) — box-preserving
+
+`scale="N"` sets `RectTransform.localScale = (N, N, 1)` but is **box-preserving**: the element's declared `anchor` / `size` / `width` / `height` / `margin` describes its **visual box**, and `scale` only changes how finely its content is _rendered_ inside that box — **not** its on-screen size or position. `N=1` is identity; `N<1` renders finer (the content is laid out larger, then shrunk — crisper detail); `N>1` renders coarser. Same result on every screen / canvas factor.
+
+Mechanically, the layout box stays put while the RectTransform is inflated by `1/N` so that `×N` lands back on the declared box. On a stretch (or `%`) axis the inflation lives in widened anchors, so Unity re-drives it on window/canvas resize for free; on a fixed-size axis `sizeDelta` is divided by `N`. `anchoredPosition` is unchanged.
+
+> **This means `scale` is a render-density knob, not a resize knob.** To make an element visually smaller, give it a smaller `size` / `width` / `height` (or `%`) — don't reach for `scale`. Reach for `scale<1` when you want the _same footprint_ rendered with finer detail.
+
+Primary use case is small text / detail UI inside a `scale-mode="pixel"` Screen. Pixel mode scales the whole Canvas by an integer factor (typically 3×/4×) to keep pixel-art crisp; great for sprites, but it locks small text out of finer-than-canvas detail. `scale="0.5"` on a label renders its glyphs at twice the canvas resolution (visually ≈ half the chunky integer step) **while keeping the label's box exactly as declared** — so a stretch-width `<Text scale="0.5">` wraps against its _full visual width_ instead of wrapping early. SDF text (TMP) stays readable; pixel-art sprites get blurred (so use this on text/UI, not on pixel-art `<Image>`s).
+
+```xml
+<!-- horizontal stretch label, rendered at 2× density; wraps against the full box, not half of it -->
+<Frame width="40" height="50">
+  <Tab anchor="stretch" sprite="" color="#0000">
+    <Icon name="cog" anchor="top-center" size="24x24" margin="4,0,0,0"/>
+    <Text anchor="top-stretch" margin="28,4,0,4" fontSize="12" scale="0.5"
+          align="center">Settings</Text>
+  </Tab>
+</Frame>
+```
+
+### Device-density (`scale="Nx"`)
+
+`scale="Nx"` (N a **positive integer**) is the device-density form: `localScale = N / canvasFactor`, where `canvasFactor` is the live CanvasScaler factor. Because the factor cancels out, the element's content renders at exactly **N physical pixels per design-unit** regardless of which integer factor `scale-mode="pixel"` auto-computes (2 / 3 / 4 …), and it is **recomputed on canvas resize / device rotation**.
+
+Why it exists: a pixel font's glyphs are crisp only when one source pixel maps to an integer number of physical pixels. A fixed multiplier like `scale="0.5"` breaks that under an odd factor (`3 × 0.5 = 1.5` px per source pixel → blur). `Nx` divides the factor out, so the on-screen result is always the integer N.
+
+```xml
+<!-- 12x12 CJK bitmap font in a scale-mode="pixel" canvas. At factor 3 it would be a
+     chunky 36x36; scale="2x" renders it 24x24 and crisp at factor 2, 3 AND 4.
+     Set fontSize to the font's native pixel height so 1 source pixel = 1 design-unit. -->
+<Text fontSize="12" scale="2x" align="center">设置</Text>
+```
+
+Caveats:
+
+- **N must be a positive integer.** `scale="1.5x"` is a parse error — use the plain multiplier `scale="1.5"` for non-aligned scaling. A non-integer N cannot be pixel-aligned.
+- **`Nx` is truly crisp only in `scale-mode="pixel"`** (integer factor + `Canvas.pixelPerfect` snaps vertices). In `auto` mode the _size_ is still exactly N device-px per design-unit, but the element's position can land on a sub-pixel (auto mode does not snap), so text may be slightly soft.
+- `Nx` only locks density. The font must also be authored so 1 source pixel = 1 design-unit — i.e. set `fontSize` to the font's native pixel height. A `fontSize` that differs from native still misaligns.
+- Box-preserving behavior and the auto-bridge / LayoutGroup-skip caveats below apply identically to `Nx` (the inflation uses `1 / localScale`).
+
+### Canvas-relative snapped (`scale="<r>r"`)
+
+`scale="<r>r"` (r a **positive float**, lowercase `r`) scales the element to **r× the current canvas factor**, but snaps the result to the nearest integer net density so it stays pixel-aligned: `localScale = max(1, round(canvasFactor × r)) / canvasFactor`. The net physical-pixels-per-design-unit is `round(canvasFactor × r)` — an integer that **grows as the window grows** (unlike `Nx`, whose net is constant) while **never going off the pixel grid** (unlike a plain float, which blurs at odd factors). Recomputed on canvas resize / device rotation.
+
+Why it exists: `scale="0.5"` follows the window but blurs at an odd factor (`3 × 0.5 = 1.5` px → off-grid); `scale="2x"` is always crisp but its size never grows with the window. `<r>r` gives the in-between: a smaller element that still responds to window size **and** stays crisp at every factor.
+
+```xml
+<!-- 12x12 CJK bitmap font: want it "about half" the chunky integer step, but crisp.
+     0.5r → factor 2: net 1 (12px); factor 3: net 2 (24px); factor 4: net 2; factor 6: net 3.
+     Always an integer net → pixel-aligned, and it grows as the window grows. -->
+<Text fontSize="12" scale="0.5r" align="center">设置</Text>
+```
+
+Choosing between the three forms:
+
+| Form                     | Net px/design-unit  | Grows with window? | Pixel-aligned?                | Use for                                                                   |
+| ------------------------ | ------------------- | ------------------ | ----------------------------- | ------------------------------------------------------------------------- |
+| `scale="N"` (float)      | `N × factor`        | yes                | only if `N×factor` is integer | render-density tweaks on SDF/TMP text; not pixel-art                      |
+| `scale="Nx"` (N int)     | `N` (constant)      | no                 | yes (pixel mode)              | UI text at a fixed physical size across devices                           |
+| `scale="<r>r"` (r float) | `round(factor × r)` | yes                | yes (pixel mode)              | small bitmap text/elements that scale with the window but must stay crisp |
+
+Caveats:
+
+- **Rounding is round-half-up**: `round(factor × r)` rounds `.5` up, so `0.5r` at factor 3 → net 2 (not 1), at factor 5 → net 3.
+- **Clamped to a minimum net of 1**: when `round(factor × r) < 1` (e.g. `0.25r` at factor 1), the net floors at 1 — you can't go below one physical pixel per design-unit and stay aligned.
+- **r may exceed 1** (`2r` grows twice as fast and stays aligned), and may be fractional (`0.25r`, `1.5r`). `r` must be positive; the suffix is lowercase `r` only — matching device-density's lowercase `x` (`0.5R` is a parse error).
+- **Truly crisp only in `scale-mode="pixel"`** (integer factor + `Canvas.pixelPerfect`). In `auto` mode the net is still integer but position can land sub-pixel — same caveat as `Nx`.
+- **Composes with `UI.PixelScalePowerOfTwo` / `UI.MinPixelScale`**: `<r>r` reads the final effective factor, so it snaps relative to whatever factor those settings produce.
+- Box-preserving behavior and the auto-bridge / LayoutGroup-skip caveats below apply identically (the inflation uses `1 / localScale`).
+
+**Where to put `scale`**:
+
+- Directly on a `<Text>` / `<Image>` (single-element use) — works under any free-positioning parent (`<Frame>` / `<Screen>` / `<SafeArea>` / `<Tab>` / `<Toggle>`); anchor / margin / wrapping all behave against the visual box.
+- Container `<Frame>` (for multi-element groups) — the whole subtree renders at density `N` inside the Frame's declared box.
+- **A `<Text>` declaring `scale` (base or any variant override) as a direct child of `<VStack>` / `<HStack>` is auto-bridged** — the library inserts an invisible layout host (`"<id> [scale-host]"` in the Hierarchy; tag-named if no id) so the group measures the text's *visual* size (`TMP preferred × scale`): `width="stretch"` / fixed width works, the text wraps against its full inflated width, and the row height grows with the wrapped content (auto-height multiline keeps working, now at density — chat-message body text is the canonical use). Omitted axes stay TMP-driven; explicit `width=` / `height=` still pin the axis. Works for all three forms (`N` / `Nx` / `<r>r`) and recomputes on resize / Variant flips. C#-visible side effect: `Get<Text>(id).RectTransform.parent` is the auto host, not the stack.
+- **On a direct child of `<Grid>`, or any non-`<Text>` control in a layout group, box-preserving is skipped** (the LayoutGroup owns the child's geometry). `localScale` still applies, but the group measures with the _unscaled_ `RT.rect`, so a `scale="0.5"` child still reserves its full unscaled slot (the "small text gap" footgun). Wrap in a `<Frame size="..." scale="0.5">` if you want the group to see the intended size.
+
+**Variant-overridable**: `scale.mobile="0.5"` / `scale.portrait="2x"` follow the standard variant override shape. When a variant where `scale` is unresolved becomes active, `localScale` resets to 1 **and** the box-preserving inflation is removed (geometry returns to its plain margin-resolved baseline). Clearing under a variant is legal: `scale.mobile=""` restores identity (same convention as `size.mobile=""`); an empty BASE `scale=""` remains a parse error.
+
+## Modal / Loading screens (XML contract)
+
+Custom `MessageBox` / `Loading` overrides are regular `<Screen>` documents — the modal subsystem just instantiates them through the normal pipeline (anchor / margin / Variant / locale all work). Two specifics XML authors must know:
+
+- **Dim backdrop is your responsibility.** The library does NOT auto-inject a full-screen Graphic behind the dialog. If you want clicks blocked on empty space, include something like `<Image id="backdrop" anchor="stretch" color="#000000FE" raycastTarget="true"/>` as a sibling of your dialog Frame — and write `raycastTarget="true"` on the dialog panel itself too, or clicks on its body fall through to the backdrop (which, for the modals that close on backdrop press, closes the dialog). Nothing catches the pointer unless it says so (see **Pointer hit-testing**); without the two declarations pointer raycasts pass through to the Canvas below.
+- **`MessageBox` requires specific `id=`s on built-in controls** (`text`, `title`, `ok`, `cancel`, `yes`, `no`, `close`, optional `icon`) so its `Bind` step can wire them via `screen.Get<T>(id)`. Default button labels are XML text content (`<Btn id="ok">OK</Btn>`) and become msgids extracted into your `.po` like any other `<Btn>` — translate them through your normal i18n workflow. **`Loading` only recognises `<Text id="text">`** (optional); everything else (spinner, backdrop) is up to you.
+
+For the C# override mechanism (`MessageBox.XmlSrc = "..."`, `Loading.XmlSrc = "..."`), the full id contract, ESC behaviour, sortingOrder bands, and `UI.CanvasConfigurator` caveats, see the **scripting-promptugui-csharp** skill's "Modal dialogs" section.
+
+## Mask & clipping
+
+PromptUGUI never auto-enables masking — you must opt in via `mask=`. Two reasons: (1) stencil Mask isn't free (extra SetPass call, breaks batching with elements outside the mask); (2) "decorative background that lets children overflow" is a legit, common pattern.
+
+| Want                                                          | Recipe                                                                                                                             | Component used                          |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Pure container, no clip                                       | `<Frame/>` (current default)                                                                                                       | none                                    |
+| Cheap rectangular clip (viewport-style)                       | `<Frame mask="rect"/>` or `<Image mask="rect" sprite="..."/>`                                                                      | `RectMask2D`                            |
+| Sprite-shape clip + sprite drawn (rounded card)               | `<Image sprite="round" mask="self"/>`                                                                                              | stencil `Mask`, `showMaskGraphic=true`  |
+| Sprite-shape clip + sprite hidden (viewport with shaped mask) | `<Image sprite="round-mask" mask="self" showMask="false"/>`                                                                        | stencil `Mask`, `showMaskGraphic=false` |
+| Rounded clip with **no sprite at all** (avatar, scroll area)  | `<Frame radius="16" mask="self" showMask="false"/>`                                                                                | stencil `Mask` on the SDF panel         |
+| Rounded card that is both drawn and clipped                   | `<Frame color="surface" radius="16" borderWidth="1" mask="self"/>`                                                                 | stencil `Mask`, `showMaskGraphic=true`  |
+| Decorated outer frame + different inner clip shape            | Nest two `<Image>` — outer has `sprite=` only; inner has `mask="self" sprite=` (different shape) + `margin=` to control inner size | none on outer, stencil on inner         |
+
+**Aspect-fit (`type="cover"` / `"contain"`) clipping**: the library never auto-clips a `cover` Image — its `AspectRatioFitter` sizes the Image to *envelop* its parent, so the overflow is clipped by a `mask="rect"` (`RectMask2D`) you put on the **parent** frame:
+
+```xml
+<Frame size="320x180" mask="rect">          <!-- box + clip both live on the parent -->
+  <Image type="cover" sprite="ui:banner"/>  <!-- no anchor/size; the parent is the box -->
+</Frame>
+```
+
+`contain` needs no mask (it fits *inside* the parent, letterboxing against the parent's background).
+
+**Variant overrides** on `mask` / `showMask` / `maskPadding` are rejected in v1 (`PUI-MASK-VARIANT`) — switching mask mode means `AddComponent`/`Destroy` at runtime, which we don't support. If you need per-variant clipping, split into two Screens or use `<Add into=…>`.
+
+## Progress
+
+`<Progress>` 显示型线性进度条（只读，无 `OnValueChanged`）；一行打包 frame / mask / bg / fill / mode / direction / value。Radial 冷却环不在范围内。属性见上方 **Built-in primitives** 目录的 `<Progress>` 行。**写多图层 / mask×bg 组合 / 查 lint 规则前，先读 [`reference/controls-progress.md`](reference/controls-progress.md)。**
+
+## Tabs
+
+`<TabBar>` + `<Tab>`：互斥选项卡容器，`bind=` 声明式显隐一个兄弟控件（`<Frame>`，或页内还要代码切子视图时的 `<Pages>`），`selectedSprite` 单图换 `overrideSprite`，`isOn` 运行期独占，支持 `itemTemplate` + `BindItems`。属性见上方 **Built-in primitives** 目录的 `<TabBar>` / `<Tab>` 行；状态色见 [`reference/states.md`](reference/states.md)。**写自定义 Tab 布局 / 共享 Template / 查 lint 规则前，先读 [`reference/controls-tabs.md`](reference/controls-tabs.md)。** One Tab = one entry the bar shows: a page's inner views (list ↔ detail) are **not** extra hidden Tabs — they switch inside the page (sibling `<Frame>`s toggled via `Hidden`, or a nested `<TabBar>`); see *Sub-views inside a page* in that file.
+
+## Common mistakes (XML)
+
+| Symptom                                                                             | Cause                                                                                                                                                                                                                        | Fix                                                                                                                                                             |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cannot specify width/size on a horizontally-stretched axis`                        | `<X anchor="top-stretch" width="200"/>`                                                                                                                                                                                      | Either change anchor, or drop `width`. The stretched axis takes its size from `margin`.                                                                         |
+| HStack/VStack 子节点全挤在一起 / 重叠 / 被压扁                                      | Stack 自己没写 `width=` / `height=`（free-positioning 下 `sizeDelta=(0,0)`），LayoutGroup 把 children 压进 0 宽/0 高 rect                                                                                                    | 给 stack 显式 `width=` / `height=`（内容驱动就写 `height="hug"`）；或者改成 `anchor="X-stretch"` 让 stack 横跨整轴 + `childAlign=` 控制 children 靠哪边。见 "Layout group 放置配方"            |
+| `<Text>` 宽度 0 / 渲染一字一行（free-positioning）                                  | `<Text/>` 在 `<Frame>` 等自由定位父级里 **XML 没写 text、运行时才 `text.TextValue = "..."`**。Initial ApplyCommon 看到 `_tmp.text == ""` → `GetNativeSize` 返回 null → `sizeDelta=(0,0)`；之后 C# 改文字不会重跑 ApplyCommon | 三选一：XML 给个非空占位（`<Text>...</Text>`，运行时再覆盖）让 native fallback 算出尺寸；或显式 `width=`/`size=`；或 `anchor="stretch"` + `margin`              |
+| Ghost element on variant toggle                                                     | `<Add>` instantiated and never deactivated                                                                                                                                                                                   | This is by design (Strategy C). Use `hidden.variant` if you need a node to disappear.                                                                           |
+| `Tab 'x' is inactive … IsOn = true is ignored` — a page's sub-view never opens (or, before the check, two pages showed at once) | A `hidden="true"` `<Tab bind="…">` (or one in an inactive `<Add>`) used as an in-page view switch: an inactive Tab is out of the `ToggleGroup`, which would bounce the visible tab straight back on | Switch sub-views **inside** the page — sibling `<Frame>`s with `hidden="true"` flipped via `Hidden` from C#, or a nested `<TabBar>`. See `reference/controls-tabs.md` → *Sub-views inside a page* |
+| Parser silently merges children                                                     | Wrote `<Btn>开始 <Image/> </Btn>` (text + element mix)                                                                                                                                                                       | Pick one: text shorthand OR child elements. Mixed content is rejected.                                                                                          |
+| Variant changes one attribute but not another                                       | `attr.variant` declared before `attr` (base) in the SAME element                                                                                                                                                             | Fine — declaration order is per-attribute. Just verify the right `.variant` exists.                                                                             |
+| `'stretch' on width/height is only valid inside <VStack>/<HStack>`                  | `<Btn width="stretch"/>` under a `<Frame>` (or other non-LayoutGroup parent)                                                                                                                                                 | Either wrap the Btn in a stack, or switch to free-positioning: `anchor="X-stretch"` + `margin` — for a bounded range here, `clamp(min, N%, max)`                                                                  |
+| `size 'stretchx72' is numeric-only...`                                              | Trying to put `stretch` or `%` keyword inside compact `size=`                                                                                                                                                                | `size=` is numeric-only. Use per-axis: `width="stretch" height="72"` or `width="50%"`                                                                           |
+| `'%' (fractional) ... cannot be used inside <VStack>/<HStack>/<Grid>`               | `<Btn width="50%"/>` inside a VStack/HStack/Grid                                                                                                                                                                             | LayoutGroup is weight-based: use `stretch*N` + spacer siblings (e.g. spacer/stretch\*2/spacer = 25/50/25), or move the child to a `<Frame>` parent — for a bounded range inside the stack, `clamp(min, stretch, max)`              |
+| `[PUI-CLAMP-SCALE] ... clamp(...) and scale="..." on the same node`             | `width` / `height` = `clamp(...)` (base or any variant) together with `scale=` (base or any variant)                                                                                                                       | Move `scale` to a child (wrap the content) or drop the clamp — the clamped axis is owned by the layout pass                                                     |
+| `both bounds open` / `min 300 > max 250` / `weighted stretch cannot be capped` / `clamp takes exactly 3 parts` | Malformed `clamp(min, middle, max)`                                                                                                                                                                                  | See "Clamp": `_` opens ONE bound, `min ≤ max`, `stretch*N` only with an open max, exactly three comma-separated parts, `middle` is `N%` or `stretch`          |
+| Panel too wide on desktop / too narrow on phones                                    | A bare `width="46%"` has no cap; `width.landscape="250"` is a step, not a curve                                                                                                                                       | `width="clamp(167, 46%, 250)"` — continuous between the bounds, hugs the anchored edge when capped                                                            |
+| `stretch*0` / `stretch*-1` / `stretch*` rejected                                    | Invalid weight after `stretch*`                                                                                                                                                                                              | Weight must be a positive number, e.g. `stretch*2` / `stretch*0.5`                                                                                              |
+| `'150%' must be in (0%, 100%]`                                                      | Percentage out of range                                                                                                                                                                                                      | Allowed range is `(0%, 100%]`. For "wider than parent", redesign the layout (likely a typo)                                                                     |
+| UI 在不同屏上视觉大小不一（4K 上变邮票、手机上变巨人）                              | `<Screen>` 没设 `reference=`，走默认 `ConstantPixelSize, scaleFactor=1`，XML 数字直接 = 设备像素                                                                                                                             | 在 `<Screen>` 上加 `reference="1920x1080"`（或你的设计分辨率），切到 `ScaleWithScreenSize`                                                                      |
+| `<Image sprite="ns:name"/>` 显示白图,控制台报 "UI.SpriteResolver is not registered" | 启动期未注册 SpriteResolver,`ns:name` 路径走 UI.SpriteResolver 找不到 atlas                                                                                                                                                  | 在 `UI.LoadDocumentAsync` / `UI.Open` 之前调一次 `SpriteResolverHelpers.UseSpriteSetResolver(spriteSets)`(或 `UseAddressableSpriteSetResolver` 走 Addressables) |
+
+## Carousel（轮播卡）
+
+`<Carousel>` 水平翻页轮播：自动播放 + 拖动吸附 + 无限循环 + 状态化指示点；卡片用 `itemTemplate` + C# `BindItems` 或静态子卡；当前页 `current` 是运行期独占状态（resize / Variant / Theme 不重置）。属性见上方 **Built-in primitives** 目录的 `<Carousel>` 行。**写动态/静态卡、配置 dots、查卡片布局约束与 lint 规则前，先读 [`reference/controls-carousel.md`](reference/controls-carousel.md)。**
+
+## Markdown
+
+`<Markdown>` Markdown document → scrollable subtree (headings/paragraphs/lists/blockquote/code/table/HR/image/links). Primary use case is dynamic load: leave the element empty in XML and set content from C# (`md.Text = …` / `md.BindText(stream)`). Static documents can be inlined via CDATA. Soft-depends on Markdig (`PROMPTUGUI_HAS_MARKDIG`); without it the raw text is shown as plain `<Text>`. **For dynamic/static usage patterns, attribute table, supported Markdown subset, block→control mapping, lossy notes, lint rules, and Markdig install + the PROMPTUGUI_HAS_MARKDIG gate, see [`reference/controls-markdown.md`](reference/controls-markdown.md).**
+
+## Gamepad / Keyboard Navigation
+
+`<FocusCursor>` is a **`<Screen>`-level child element** (not a registered control — removed from the control tree by the parser, NOT instantiated at the cursor position). Its first child subtree is the cursor visual, which the library slides to the focused control's edge each frame. Navigation must be enabled from C# via `UI.UseGamepadNavigation()` once at startup (New Input System only). `focus="true"` marks the initial selection on open; `nav="none"` removes a control from the navigation graph; `navUp/navDown/navLeft/navRight="id"` pin explicit directional targets (unspecified directions auto-fill geometrically; only `<Btn>` / `<Tab>` / `<TabMenu>` / `<Collapsible>` / `<Toggle>` / `<Slider>` / `<Dropdown>` / `<InputField>` / `<ScrollList>` accept these attributes — `PUI-NAV-ON-NON-SELECTABLE` catches misuse). A built-in default cursor is used when `<FocusCursor>` is omitted. Modal focus trap (navigation contained inside the active modal, restored on close) is automatic. **Full attribute table, cursor animation, explicit nav overrides, modal trap, lint rules, complete XML + C# examples: [`reference/navigation.md`](reference/navigation.md).**
+
+## Quick reference (cheatsheet)
+
+```
+MCP FEEDBACK  every .ui.xml write  →  refresh_unity + read_console (error,warning)
+              MCP missing          →  ask user to open Unity + connect MCP for Unity
+.NET LINT     every .ui.xml write  →  dotnet run --project Library/PackageCache/com.promptugui.core@<hash>/.lint/UIXmlLint -- <path/to/your.ui.xml>
+
+ROOT          <PromptUGUI version="1"> ... </PromptUGUI>
+TOP LEVEL     <Import src="" [as=""]/>  <Screen name="" [canvas="overlay|camera|world"]>  <Template name="">  <Style name="">
+
+STYLE/CLASS   <Style name="card" color="surface/0.85" radius="16" borderWidth="1"/>   named attribute pack, top level, no children
+              <Frame class="card" height="220"/>      inline > right class > left class, atomic per attribute name
+              works on any tag/attribute (.variant included); a control without that attribute ignores it
+              commons + Import + hot reload like <Template>; namespaced ref uses a colon: class="ui:card"
+
+FRAME VISUAL  <Frame color="surface/0.9" radius="16" borderWidth="1" borderColor="stroke/0.15" glow="0"/>
+              gradients everywhere a colour goes: "[to right,|45deg,] A[ 30%], [50%,] B, C, D" (2–4 stops)
+              default = to bottom; "to bottom right" = CSS magic corner (other two corners on the 50% line)
+              borderColor / glowColor / innerGlowColor take it too, on the SAME line as the fill
+              radius: R | TL,TR,BR,BL (CSS clockwise) | pill      border draws INWARD    glow inflates the quad
+              no visual attrs → bare RectTransform (zero cost)    sprite= still does nothing (use <Image>)
+HAZE          haze="40" hazeColor="to top, cyan/0.5, cyan/0" hazeDensity="0.5" hazeDrift="6"   noise fog inside the shape, under the border
+              haze = patch size px (>0 on); hazeColor = colour AND mask (its ramp), /alpha = strength (about 0.5 = mist)
+              hazeDensity 0..1 = coverage: 0 a few patches, 1 a veil over everything; drift = px/s, unscaled
+              sampled in canvas space: neighbours differ, one material; intensity lights it (opaque only)
+              on glass="true" it lies on the blurred backdrop, blur untouched; not in a weld group (PUI-GLASS-HAZE)
+
+BUILT-INS     <Frame> <Image> <Text> <VStack> <HStack> <Grid> <Btn> <Icon>
+              <Toggle> <Slider> <Dropdown> <ScrollList> <InputField> <TabMenu>
+              <ScrollList …><Scrollbar thickness="6" overlay="true" padding="1.5" radius="pill" handleRadius="pill" handleGlow="3"/>…</ScrollList>  滚动条是部件子元素（<Dropdown> 同）；轨道 = 主表面，滑块 = handle*；旧 scrollbar* 属性已退役
+              <ScrollList reorder="true" reorderHold="auto" reorderHandle="grip" reorderDuration="0.15s"/>  拖动排序：实时让位 + 松手落位补间；C# OnReordered((From,To))；行内 <Animation on="lift" reverse-on="drop">
+              <Progress value="0.6" fill="ui:bar"/>  最简；mask= + 不设 bg → mask sprite 自动可见兼当底；radial 进度环不在 <Progress> 范围
+              <TabBar><Tab text="A" sprite="..." selectedSprite="..." bind="frame_a" isOn="true"/>...</TabBar>  互斥 + Tab 自管 sprite/selectedSprite + bind 自动 toggle Frame
+              <Carousel itemTemplate="Card" interval="5" dots="bottom-center" dotSprite="ui:dot" dotColor="#888" dotSelectedColor="#fff"/>  翻页 + 自动播放 + 拖动 + 状态化指示点；卡片走 C# BindItems；当前页 resize 不重置
+              <Collapsible text="任务" headerHeight="24" maxHeight="200" group="settings" transition="0.2s">rows</Collapsible>
+                                       内联折叠；高度恒为 header+body（height= 是 PUI-COLLAPSIBLE-HEIGHT）；<Header>…</Header> 换掉自带 caption；expanded 运行期独占
+              <Show on="state-pressed">...</Show>  visible-while-state wrapper; siblings mutex; unclaimed states → state-normal fallback
+TEXT SHORT    <Text>Hi</Text> ≡ <Text text="Hi"/>     (also <Btn>, <Toggle>, <InputField>)
+
+BTN STATE     *Color (hoverColor/pressedColor/disabledColor)         absolute per-state bg colour (targetGraphic only, no fan-out)
+              *Modulate (hoverModulate/pressedModulate/disabledModulate)  relative multiplier, fanned out to bg + all descendants, fade ~0.1s
+              displayed = (absolute ?? color) × (modulate ?? white)
+              disabled default: whole-control grayscale (shader desaturation) when no disabled* authored; override with any disabled*; opt out: disabledModulate="none" — see reference/states.md
+TAB/TOGGLE    + selectedColor (selection-aware bg base while active/isOn) / selectedModulate; <Tab selectedSprite>=overrideSprite swap on isOn (no overlay)
+STATE         stateReact="false"  opt node+subtree out of *Modulate fan-out (no effect on *Color — absolute is bg-only)
+              on="state-normal|hover|pressed|selected|disabled[@id]"  on <Trigger>/<Animation>/<Show>; resolves UPWARD to nearest <Btn>/<Tab>/<Toggle>; fires on enter
+EXIT          <Animation on="open" reverse-on="close" …>  entrance played backwards when the Screen closes; on="close" type="slideout-*" for its own exit
+              the Screen waits for what close fired, then destroys; no close-bound <Animation> → destroyed on the same frame; PUI-CLOSE-LOOP for on="close" + endless loop
+              state-selected is meaningful only on <Tab>/<Toggle> source; <Btn> never emits it
+              详见 reference/states.md（状态化视觉）· reference/animations.md（Trigger/Animation）
+
+COMMON ATTRS  id  anchor  size|width|height  margin  pivot  hidden  interactable  stateReact  class
+STACK-CHILD   flow="false"  → out of layout flow (ignoreLayout; anchor/margin legal again)
+STACK-ONLY    padding  spacing                                    (VStack/HStack/Grid)
+
+ANCHOR        "<v>-<h>"     v ∈ {top, center, bottom, stretch}
+                            h ∈ {left, center, right, stretch}
+ALIASES       center  =  center-center
+              stretch | fill  =  stretch-stretch
+
+SIZE          size="WxH"          numeric only (no keywords)
+              width="W" / height="H"   numeric, or "stretch[*N]" (LG only), or "N%" (free-positioning only),
+                                       or "hug" (VStack/HStack/Grid/ScrollList only — size to content)
+              FORBIDDEN on anchor-stretched axis
+HUG           "hug"            → as big as my content; clamp(min, hug, max) caps it (then ScrollList scrolls)
+                                 PUI-HUG-TAG (wrong tag) / -SCALE (with scale=) / -STRETCH-CHILD (stretch child)
+MESH XFORM    rotation="90" flip="x|y|xy"   <Image>/<Icon>/<RawImage> only; mesh-level, layout untouched
+INTENSITY     intensity="3"    ≥1, default 1 = as drawn. Exposure over what the surface paints: core whitens, halo keeps
+                               its hue — "lit", not "lighter colour". <Frame> family / <Decor> / <Image> / <Icon> (any type).
+                               Not glass (PUI-GLASS-INTENSITY). glowColor /alpha = how much halo; intensity = how hot.
+                               Dark backgrounds; pair with a dark textColor. Disabled switches it off.
+SPRITE FX     blur="4" glow="8" glowColor="accent|self/0.5"   <Image>/<Icon> only, type="simple"/contain/cover only
+              glowColor unwritten = the sprite's own colours; the glow is drawn OUTSIDE the rect
+              (layout unchanged — leave spacing); radii past a few texels need mipmaps on the texture
+              (runtime warns per texture, with the limit for that draw size); atlas must not rotate/tight-pack
+REFLECTION    <Icon name="x"/> then <Icon name="x" flip="y" color="white/0.35, white/0 50%"/>
+              draw order = XML order, so floor <Image> between the two gives reflection < floor < object
+              gradient runs on the FINAL mesh: first colour = the START of what you see, flipped or not
+STRETCH KW    "stretch"        → LayoutElement.flexible*=1   (LayoutGroup child only)
+              "stretch*N"      → LayoutElement.flexible*=N   (N > 0; for 1:2:1 splits etc.)
+              Free-positioning equivalent: anchor="...-stretch" + margin
+FRACTIONAL %  "N%"             → anchorMin/Max sub-range     (free-positioning child only)
+              Range (0%, 100%]. anchor= preset decides where the fraction sits
+              (left=[0,f], center=[(1-f)/2,(1+f)/2], right=[1-f,1]; same for top/center/bottom)
+              In LayoutGroup → parse error (use stretch*N + spacer siblings)
+
+MARGIN        "X" | "V,H" | "T,R,B,L"     "_" = 0 placeholder
+              Always inward from anchor (positive)
+
+TEMPLATE      <Template name="X">
+                <Param name="p" [default=""]/>
+                <body-with-exactly-one-root>
+                  ...{{p}}...           string substitute
+                  <Y if="{{p}}"/>       drop element when falsy
+                  <Slot/>               inject children (max 1)
+                </body>
+              </Template>
+
+VARIANT INL   attr.variantName="..."     last-active-wins
+VARIANT BLK   <Variant when="name">
+                <Add into="#id|@root" at="start|end|N">...</Add>
+              </Variant>
+NEVER VARY    id, tag name, <Param default>
+
+IMPORT        <Import src="path/File.ui" [as="ns"]/>   Resources: src keeps .ui, relative to resolver root
+USE           <ns.TagName/>             (when prefixed)
+
+SCREEN ATTRS  canvas="overlay|camera|world"    default overlay; renderMode only
+              reference="WxH"                  ScaleWithScreenSize; unset = ConstantPixelSize
+                                               .variant overrides supported (reference.mobile=...)
+              scale-mode="auto|pixel"          pixel = ConstantPixelSize + integer factor
+                                               requires reference; project default via UI.DefaultScaleMode
+
+I18N XML      <Text>...</Text>                 extract + translate
+              <Text tr="false">...</Text>      skip
+              <Text font="title">...</Text>    font type
+              <Text ctx="door">Open</Text>     msgctxt disambiguation
+
+GAMEPAD NAV   UI.UseGamepadNavigation()        enable once at startup (new Input System only, idempotent)
+              <FocusCursor side="left" offset="-4,0">  Screen-level cursor overlay (direct <Screen> child)
+                <Image anchor="center" size="24x24" sprite="ui:cursor"/>
+              </FocusCursor>                   cursor slides to focused control edge; built-in default if omitted
+              focus="true"                     mark initial selection on Screen open (selectable tags only)
+              nav="none"                       remove from nav graph (selectable tags only)
+              navUp/navDown/navLeft/navRight="id"  explicit neighbor (unspecified = geometric auto-fill)
+              PUI-NAV-ON-NON-SELECTABLE        nav*/focus on non-selectable tag (Frame/Image/Text/etc.)
+              PUI-NAV-UNKNOWN-TARGET           navX="id" where id not in same Screen
+              details: reference/navigation.md
+
+SCROLLBAR LINT PUI-SCROLLBAR-OUTSIDE            <Scrollbar> not a direct child of <ScrollList> / <Dropdown>
+              PUI-SCROLLBAR-DUPLICATE          a second bar under one host (first in document order wins)
+              PUI-SCROLLBAR-IN-ADD             a bar as a direct child of a Variant <Add> block
+              PUI-SCROLLBAR-LAYOUT-ATTR        anchor/size/width/height/margin/pivot/flow/scale/hidden on the bar (thickness= is its size)
+              PUI-SCROLLBAR-CHILD              children under <Scrollbar>
+              PUI-SCROLLBAR-VALUE              bad thickness / spacing / padding; padding that swallows the thickness
+              PUI-SCROLLBAR-OVERLAY-SPACING    spacing= with overlay="true" (uGUI ignores it)
+              PUI-SCROLLBAR-RETIRED-ATTR       old host-side scrollbar* attributes (also inside <Style> packs)
+              PUI-PROC-SPRITE-CONFLICT also covers inner layers: handle= + handle*, fill= + fillRadius, frame= + frameRadius
+
+SPRITE FX LINT PUI-FX-TAG                      blur= outside <Image> / <Icon> (RawImage / Btn not wired up yet)
+              PUI-FX-TYPE                      blur/glow with type=sliced|tiled|filled (also warned at runtime,
+                                               where a 9-slice sprite's automatic Sliced is visible)
+              PUI-FX-ATTR                      glowColor= with no glow=
+              PUI-FX-MASK                      blur/glow on the same node as mask="self"
+              (no rule on radius SIZE — lint sees neither the texture nor the drawn scale; the runtime
+               warns per texture when the kernel really has to fall back to no mipmaps)
+
+STYLE LINT    PUI-CLASS-EMPTY                  class="" / whitespace-only — names no style
+              PUI-PROCEDURAL-VALUE             bad radius / borderWidth / glow / blur / intensity / haze / hazeDrift / hazeDensity value, and the inner-layer
+                                               ones (fillRadius / handleRadius / handleGlow …) (also inside <Style>)
+              PUI-GLASS-INTENSITY              intensity= on glass="true" / a weld carrier — glass emits no light
+              PUI-GLASS-HAZE                   haze= on a weld carrier / a welded block — the group shader has no fog layer (a lone pane takes it)
+              PUI-CONTAINER-VISUAL-ATTR        sprite= on any container; color/radius/border/glow on *Stack/Grid/SafeArea
+                                               — also fires when the attribute arrives through class=
+              PUI-EXPAND                       unknown template / style name, or an <Import> cycle
+              (PUI-EXPAND needs the imported files on disk; with an Addressables / custom resolver
+               the CLI skips that check and the name stays a runtime error)
+              PUI-THEME-STYLE-NO-BASELINE      <Style> declared only inside a <Theme> — unreachable
+              PUI-THEME-STYLE-SHAPE            two themes resolve a style to different attribute sets
+                                               (shape attrs are exempt when one side has NONE of them
+                                                — that surface toggles wholesale and reverts itself)
+              PUI-THEME-STYLE-ON-INVOCATION    themed class= on a Template invocation won't re-skin
+
+HIT-TESTING   PUI-RAYCAST-TAG                  raycastTarget= outside Frame / Image / RawImage / Text (containers
+                                               have no Graphic; Icon / Decor / Progress are always click-through;
+                                               interactive controls are not configurable) — also warned at runtime
+              PUI-RAYCAST-UNDECIDED            the outermost drawn surface on a path from the Screen root carries
+                                               no raycastTarget — write true (a panel) or false (a decoration);
+                                               CLI-only, nothing at UI.Open
+```
+
+## Triggers and Animations
+
+`<Trigger>` 声明式事件钩子（`open` / `close` / `click` / `hover-*` / `press` / `state-*` / `manual` → C# `OnFire`）；`<Animation>` 在其上叠加 LitMotion 动效（preset 预设 / 低层 transform / 文字效果，三族互斥）。**用 `<Trigger>` / `<Animation>` 前，先读 [`reference/animations.md`](reference/animations.md)**（含完整 `on=` 表、easing、parse errors、patterns）。
+
+退场：`<Animation on="open" reverse-on="close" …>` 让入场在 Screen 关闭时倒放，或 `on="close" type="slideout-down"` 独立退场；Screen 会等这些动画播完再销毁（没写退场的 Screen 仍当帧销毁）。见 `reference/animations.md` 的 **Exit animations**。
+
+## State visuals (Btn / Tab / Toggle)
+
+`<Btn>` / `<Tab>` / `<Toggle>` 广播 uGUI 交互状态，三种响应（递进）：① `*Color`（绝对 bg 基色）/ `*Modulate`（相对乘子，向子树扩散，`stateReact="false"` 退出）；② `<Show on="state-*">` 按状态换整块美术（`<Btn pressedSprite>` / `<Btn disabledSprite>` / `<Tab selectedSprite>` 是单图简写）；③ `<Trigger>` / `<Animation on="state-*">` 状态触发动效。**用任何 `*Color` / `*Modulate` / `selectedColor` / `<Show on=state-*>` / `pressedSprite` / `selectedSprite` 前，先读 [`reference/states.md`](reference/states.md)。**
+
+## Worked end-to-end example (XML)
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<PromptUGUI version="1">
+
+  <Template name="MenuButton">
+    <Param name="label"/>
+    <Param name="color" default="#3B82F6"/>
+    <Btn color="{{color}}" size="240x64"
+         size.mobile="" width.mobile="stretch" height.mobile="72">
+      <Text anchor="center" fontSize="24" color="#FFFFFF">{{label}}</Text>
+    </Btn>
+  </Template>
+
+  <Screen name="MainMenu" reference="1920x1080" reference.mobile="1080x1920">
+    <Image anchor="stretch" sprite="bg/main"/>
+
+    <VStack id="menu" anchor="center" size="280x240" spacing="12"
+            anchor.mobile="bottom-stretch"
+            size.mobile="" height.mobile="320"
+            margin.mobile="_,16,40,16">
+      <MenuButton id="play"     label="开始游戏"/>
+      <MenuButton id="settings" label="设置"/>
+      <MenuButton id="quit"     label="退出" color="#DC2626"/>
+    </VStack>
+
+    <Variant when="mobile">
+      <Add into="@root">
+        <Image id="logo" anchor="top-center" size="180x60"
+               margin="40,_,_,_" sprite="ui/logo"/>
+      </Add>
+    </Variant>
+  </Screen>
+
+</PromptUGUI>
+```
+
+For the C# side that loads this document, opens the Screen, and wires `screen.Get<Btn>("play").OnClick`, see the **scripting-promptugui-csharp** skill. Note: `id="play"` on `<MenuButton id="play"/>` is automatically transferred to the template body's single root element (the `<Btn>`), so `screen.Get<Btn>("play")` resolves directly without a path. Use a path (`"play/inner"`) only when reaching into an element that has its own id **inside** the template body.

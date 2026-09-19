@@ -1,0 +1,480 @@
+using NUnit.Framework;
+using PromptUGUI.Application;
+using PromptUGUI.Controls;
+using PromptUGUI.Parser;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace PromptUGUI.Tests.EditMode.Controls
+{
+    public class ControlApplyCommonLayoutGroupTests
+    {
+        [SetUp] public void SetUp() => UI.ResetForTests();
+        [TearDown] public void TearDown() => UI.ResetForTests();
+
+        [Test]
+        public void Btn_in_VStack_with_size_writes_LayoutElement_preferred_with_flexible_zero()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' size='64x64'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le, "Btn inside VStack with size= must get a LayoutElement");
+            Assert.AreEqual(64f, le.preferredWidth);
+            Assert.AreEqual(64f, le.preferredHeight);
+            Assert.AreEqual(0f, le.flexibleWidth);
+            Assert.AreEqual(0f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Btn_in_VStack_with_only_width_height_falls_back_to_native()
+        {
+            // BCS-D7 partial-write: 作者写 width 不写 height → 未写的轴用 GetNativeSize 兜底
+            // （Btn 无 text 时 native=(80,44)）。flexible 保持 -1（"无意见"），与 both-missing 一致。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' width='100'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le);
+            Assert.AreEqual(100f, le.preferredWidth);
+            Assert.AreEqual(0f, le.flexibleWidth);
+            Assert.AreEqual(44f, le.preferredHeight,
+                "omitted height → Btn native (44)");
+            Assert.AreEqual(-1f, le.flexibleHeight,
+                "native-filled axis keeps flexible=-1 (defer to ILayoutElement priority)");
+        }
+
+        [Test]
+        public void Btn_in_VStack_with_no_size_attrs_gets_LayoutElement_from_native()
+        {
+            // BCS-D6: Btn 提供 GetNativeSize → ApplyLayoutElement 在无 size 时挂 LE 报告 native preferred.
+            // 这覆写了 LGC-D8 在 GetNativeSize 不为 null 控件上的行为；GetNativeSize=null 的控件仍走原 LGC-D8.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le, "BCS-D6: GetNativeSize 非 null 的控件无 size → 自动挂 LE 报告 native");
+            // Btn 无 text → fallback (80, 44)
+            Assert.AreEqual(80f, le.preferredWidth);
+            Assert.AreEqual(44f, le.preferredHeight);
+        }
+
+        [Test]
+        public void Image_in_VStack_with_no_size_attrs_gets_no_LayoutElement()
+        {
+            // LGC-D8 原契约：GetNativeSize=null 的控件（如 Image）无 size → 不挂 LE，
+            // 让 UnityImage 自带的 ILayoutElement 主导。Btn 测试拆出去用了 BCS-D6 新分支。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Image id='i'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var img = screen.Get<PromptUGUI.Controls.Image>("i");
+            Assert.IsNull(img.GameObject.GetComponent<LayoutElement>(),
+                "Image.GetNativeSize() == null → 不挂 LE，让 UnityImage 自带 ILayoutElement 主导");
+        }
+
+        [Test]
+        public void Btn_in_Frame_with_size_writes_sizeDelta_not_LayoutElement()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='frame' anchor='stretch' margin='0'>
+    <Btn id='b' size='64x64'/>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            Assert.IsNull(btn.GameObject.GetComponent<LayoutElement>(),
+                "Btn under Frame (non-LayoutGroup parent) must NOT get a LayoutElement");
+            Assert.AreEqual(new Vector2(64f, 64f), btn.RectTransform.sizeDelta,
+                "Non-LayoutGroup parent: size still writes to sizeDelta (existing behavior preserved)");
+        }
+
+        [Test]
+        public void Btn_in_Grid_with_size_gets_no_LayoutElement()
+        {
+            // Grid uses cellSize for all children; LayoutElement on Grid children is ignored
+            // by GridLayoutGroup, so we don't add one — avoids the appearance of a knob that
+            // actually does nothing.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Grid id='grid' columns='2' cellSize='40x40' width='200' height='200'>
+    <Btn id='b' size='64x64'/>
+  </Grid>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            Assert.IsNull(btn.GameObject.GetComponent<LayoutElement>(),
+                "Btn under Grid must NOT get a LayoutElement (GridLayoutGroup ignores it; cellSize wins)");
+        }
+
+        [Test]
+        public void Variant_switch_from_size_to_width_only_resets_height_axis()
+        {
+            // 验证 ApplyLayoutElement 的"先重置两轴再写入"逻辑：切换变体让 height 轴从"被 size=指定为 64"
+            // 变成"未指定"，preferredHeight 必须从 64 重置 —— 不能残留前一轮的 64。
+            // BCS-D7 partial-write 后，未指定的轴会从 GetNativeSize 兜底，所以 mobile 下 height 落到 Btn native (44)，
+            // 而不是 -1。关键点：换值发生了（≠64），证明 reset+rewrite 路径有效。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' size='64x64' size.mobile='' width.mobile='100'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            UI.Variants.Set("mobile", false);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(64f, le.preferredWidth, "desktop: size= writes both axes");
+            Assert.AreEqual(64f, le.preferredHeight);
+            Assert.AreEqual(0f, le.flexibleWidth);
+            Assert.AreEqual(0f, le.flexibleHeight);
+
+            UI.Variants.Set("mobile", true);
+            // Variants.Changed → Screen.ReSolve → ApplyCommon → ApplyLayoutElement
+            Assert.AreEqual(100f, le.preferredWidth, "mobile: width override = 100");
+            Assert.AreEqual(0f, le.flexibleWidth);
+            Assert.AreEqual(44f, le.preferredHeight,
+                "mobile has no height (size.mobile empty) — falls back to Btn native (44), not retained 64");
+            Assert.AreEqual(-1f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Btn_in_VStack_with_width_stretch_writes_flexible_one()
+        {
+            // width="stretch" inside V/HStack maps to LayoutElement.flexibleWidth=1
+            // (with preferredWidth=0). The LayoutGroup then grows the child to fill the cross axis.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='380' height='180'>
+    <Btn id='b' width='stretch' height='46'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le, "Btn with width=stretch must get a LayoutElement");
+            Assert.AreEqual(0f, le.preferredWidth, "stretch: preferred width = 0");
+            Assert.AreEqual(1f, le.flexibleWidth, "stretch: flexible width = 1 (LayoutGroup distributes remaining space)");
+            Assert.AreEqual(46f, le.preferredHeight, "height numeric stays preferred");
+            Assert.AreEqual(0f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Btn_in_HStack_with_height_stretch_writes_flexible_one()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <HStack id='stack' width='200' height='200'>
+    <Btn id='b' width='100' height='stretch'/>
+  </HStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(100f, le.preferredWidth);
+            Assert.AreEqual(0f, le.flexibleWidth);
+            Assert.AreEqual(0f, le.preferredHeight);
+            Assert.AreEqual(1f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Variant_switch_from_stretch_to_numeric_resets_flexible()
+        {
+            // mobile base 是 stretch；切到 desktop 写死 width=240 → flexibleWidth 必须从 1 回到 0。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='380' height='180'>
+    <Btn id='b' width='stretch' width.desktop='240' height='46'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            UI.Variants.Set("desktop", false);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(0f, le.preferredWidth, "base: stretch");
+            Assert.AreEqual(1f, le.flexibleWidth);
+
+            UI.Variants.Set("desktop", true);
+            Assert.AreEqual(240f, le.preferredWidth, "desktop override: numeric");
+            Assert.AreEqual(0f, le.flexibleWidth, "flexibleWidth must reset to 0 when override is numeric");
+        }
+
+        [Test]
+        public void Btn_in_VStack_with_stretch_weighted_two_writes_flexible_two()
+        {
+            // width="stretch*2" maps to LayoutElement.flexibleWidth=2 — so a 1:2:1 split
+            // with two stretch-weight-1 siblings + this child yields exact 25/50/25.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' width='stretch*2' height='46'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(0f, le.preferredWidth);
+            Assert.AreEqual(2f, le.flexibleWidth, "weight 2 → flexibleWidth=2");
+        }
+
+        [Test]
+        public void Btn_in_HStack_with_stretch_weighted_half_writes_flexible_half()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <HStack id='stack' width='200' height='200'>
+    <Btn id='b' width='100' height='stretch*0.5'/>
+  </HStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(0.5f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Stretch_under_Frame_throws()
+        {
+            // 'stretch' keyword is meaningless outside V/HStack — anchor.stretch is the right tool
+            // for free-positioning containers. Reject loudly instead of silently doing nothing.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='frame' anchor='stretch' margin='0'>
+    <Btn id='b' width='stretch' height='46'/>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            Assert.Throws<ParseException>(() => UI.Open("S"));
+        }
+
+        [Test]
+        public void Stretch_under_Grid_throws()
+        {
+            // Grid uses cellSize and ignores LayoutElement; stretch on a Grid child is doubly meaningless.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Grid id='grid' columns='2' cellSize='40x40' width='200' height='200'>
+    <Btn id='b' width='stretch'/>
+  </Grid>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            Assert.Throws<ParseException>(() => UI.Open("S"));
+        }
+
+        [Test]
+        public void Btn_in_HStack_with_size_pins_minWidth_and_minHeight()
+        {
+            // 固定 size 的 LayoutGroup 子节点必须钉死 min = preferred，否则当 HStack 被父级
+            // 限宽、总 preferred 超出可用宽时，HorizontalLayoutGroup 会用共享插值系数把它
+            // 一起压扁（min 默认 -1=0 → 有收缩余地）。钉 min 让"strictly NxN"对压缩也成立。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <HStack id='stack' width='200' height='200'>
+    <Btn id='b' size='64x64'/>
+  </HStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(64f, le.minWidth, "fixed size pins minWidth = preferred (no shrink)");
+            Assert.AreEqual(64f, le.minHeight, "fixed size pins minHeight = preferred (no shrink)");
+        }
+
+        [Test]
+        public void Btn_in_VStack_with_width_stretch_leaves_minWidth_unpinned()
+        {
+            // stretch 的本意就是"可被压到 0、按权重分配剩余空间" → minWidth 不能被钉，保持 -1。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='380' height='180'>
+    <Btn id='b' width='stretch' height='46'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(-1f, le.minWidth, "stretch axis stays shrinkable (minWidth=-1)");
+            Assert.AreEqual(46f, le.minHeight, "explicit numeric height still pins minHeight");
+        }
+
+        [Test]
+        public void Btn_in_VStack_native_fallback_axis_leaves_min_unpinned()
+        {
+            // 显式轴钉 min；native 兜底轴（这里 height=Btn native 44）不钉 min，保持 -1，
+            // 让自带 ILayoutElement 仍有收缩话语权。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' width='100'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(100f, le.minWidth, "explicit width pins minWidth");
+            Assert.AreEqual(-1f, le.minHeight, "native-filled height axis stays unpinned (minHeight=-1)");
+        }
+
+        [Test]
+        public void Variant_switch_from_size_to_stretch_resets_minWidth()
+        {
+            // 切到 stretch 变体后 minWidth 必须从 64 重置回 -1（清掉前一轮固定 size 的 min 残留），
+            // 否则 stretch 子节点会被错误地钉死成不可收缩。
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' size='64x64' size.mobile='' width.mobile='stretch' height.mobile='46'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            UI.Variants.Set("mobile", false);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.AreEqual(64f, le.minWidth, "desktop: fixed size pins minWidth");
+
+            UI.Variants.Set("mobile", true);
+            Assert.AreEqual(-1f, le.minWidth, "mobile stretch: minWidth must reset to -1 (shrinkable again)");
+        }
+
+        [Test]
+        public void LayoutElement_inside_VStack_skips_rect_anchored_and_size_writes()
+        {
+            // Author-supplied anchor/margin under a LayoutGroup is ignored by design (spec §6.5).
+            // We also skip writing anchorMin/anchorMax/anchoredPosition/sizeDelta so the layout
+            // pass owns geometry without contention.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <VStack id='stack' width='200' height='200'>
+    <Btn id='b' size='64x64'/>
+  </VStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            // ApplyCommon 不能把 size= 的值写到 sizeDelta（LayoutGroup 接管时只走 LayoutElement）。
+            // 注意：RectTransform 默认 sizeDelta=(100,100)，所以这里反证"非 64x64"足够说明 size= 没被双写。
+            Assert.AreNotEqual(new Vector2(64f, 64f), btn.RectTransform.sizeDelta,
+                "ApplyCommon must not double-write user's size= value into sizeDelta when parent is a LayoutGroup");
+        }
+        // ───── clamp(min, stretch, max) — spec 2026-08-30-clamp-size-design §5.2 ─────
+
+        private static string Doc(string body) =>
+            "<?xml version='1.0' encoding='utf-8'?>\n<PromptUGUI version='1'><Screen name='S'>\n"
+            + body + "\n</Screen></PromptUGUI>";
+
+        [TestCase("clamp(167, stretch, 250)", 167f, 250f, 0f)]
+        [TestCase("clamp(_, stretch, 250)", -1f, 250f, 0f)]
+        [TestCase("clamp(167, stretch, _)", 167f, 0f, 1f)]
+        [TestCase("clamp(167, stretch*2, _)", 167f, 0f, 2f)]
+        public void Clamp_stretch_maps_to_LayoutElement_triplet(string width, float min, float pref, float flex)
+        {
+            UI.LoadDocument("test", Doc(
+                $"<HStack id='h' anchor='top-left' width='300' height='50'><Frame id='c' width='{width}' height='40'/></HStack>"));
+            var screen = UI.Open("S");
+            var le = screen.Get<Frame>("c").GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le);
+            Assert.AreEqual(min, le.minWidth, "minWidth");
+            Assert.AreEqual(pref, le.preferredWidth, "preferredWidth");
+            Assert.AreEqual(flex, le.flexibleWidth, "flexibleWidth");
+        }
+
+        [TestCase(150f, 167f)]   // below min → overflows at min
+        [TestCase(220f, 220f)]   // in range → fills
+        [TestCase(300f, 250f)]   // above max → capped
+        public void Clamp_stretch_sole_child_fills_group_within_bounds(float groupW, float expected)
+        {
+            UI.LoadDocument("test", Doc(
+                $"<HStack id='h' anchor='top-left' width='{groupW}' height='50'><Frame id='c' width='clamp(167, stretch, 250)' height='40'/></HStack>"));
+            var screen = UI.Open("S");
+            LayoutRebuilder.ForceRebuildLayoutImmediate(screen.Get<HStack>("h").RectTransform);
+            Assert.AreEqual(expected, screen.Get<Frame>("c").RectTransform.rect.width, 0.01f);
+        }
+
+        [Test]
+        public void Clamp_stretch_with_spacer_sibling_caps_and_spacer_takes_the_rest()
+        {
+            UI.LoadDocument("test", Doc(
+                "<HStack id='h' anchor='top-left' width='300' height='50'>" +
+                "<Frame id='c' width='clamp(167, stretch, 250)' height='40'/>" +
+                "<Frame id='spacer' width='stretch' height='40'/>" +
+                "</HStack>"));
+            var screen = UI.Open("S");
+            LayoutRebuilder.ForceRebuildLayoutImmediate(screen.Get<HStack>("h").RectTransform);
+            Assert.AreEqual(250f, screen.Get<Frame>("c").RectTransform.rect.width, 0.01f);
+            Assert.AreEqual(50f, screen.Get<Frame>("spacer").RectTransform.rect.width, 0.01f);
+        }
+
+        [TestCase(80f, 100f)]
+        [TestCase(150f, 150f)]
+        [TestCase(300f, 200f)]
+        public void Clamp_stretch_on_cross_axis_of_VStack(float groupW, float expected)
+        {
+            UI.LoadDocument("test", Doc(
+                $"<VStack id='v' anchor='top-left' width='{groupW}' height='200'><Frame id='c' width='clamp(100, stretch, 200)' height='20'/></VStack>"));
+            var screen = UI.Open("S");
+            LayoutRebuilder.ForceRebuildLayoutImmediate(screen.Get<VStack>("v").RectTransform);
+            Assert.AreEqual(expected, screen.Get<Frame>("c").RectTransform.rect.width, 0.01f);
+        }
+
+        [Test]
+        public void Clamp_stretch_under_Grid_throws()
+        {
+            UI.LoadDocument("test", Doc(
+                "<Grid id='grid' columns='2' cellSize='40x40' width='200' height='200'><Frame id='c' width='clamp(167, stretch, 250)'/></Grid>"));
+            Assert.Throws<ParseException>(() => UI.Open("S"));
+        }
+
+        [Test]
+        public void Clamp_stretch_out_of_flow_throws()
+        {
+            UI.LoadDocument("test", Doc(
+                "<VStack id='v' width='200' height='200'><Frame id='c' flow='false' width='clamp(167, stretch, 250)' height='40'/></VStack>"));
+            Assert.Throws<ParseException>(() => UI.Open("S"));
+        }
+
+        [Test]
+        public void Clamp_stretch_in_group_leaves_no_active_ClampFitter()
+        {
+            UI.LoadDocument("test", Doc(
+                "<HStack id='h' anchor='top-left' width='300' height='50'><Frame id='c' width='clamp(167, stretch, 250)' height='40'/></HStack>"));
+            var screen = UI.Open("S");
+            var fitter = screen.Get<Frame>("c").GameObject.GetComponent<PromptUGUI.Controls.Internal.ClampFitter>();
+            Assert.IsTrue(fitter == null || !fitter.enabled, "group clamp lives in LayoutElement, not the fitter");
+        }
+    }
+}

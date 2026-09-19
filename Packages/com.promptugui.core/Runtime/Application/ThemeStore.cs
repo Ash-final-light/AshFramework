@@ -1,0 +1,195 @@
+using System.Collections.Generic;
+using PromptUGUI.IR;
+using PromptUGUI.Parser;
+using UnityEngine;
+
+namespace PromptUGUI.Application
+{
+    /// <summary>
+    /// Singleton holding parsed &lt;Theme&gt; blocks. Mirrors <c>TranslationStore</c>:
+    /// loaders register, runtime looks up. Hot reload routes through <c>ReplaceFromSrc</c>.
+    /// Public surface is <c>UI.Theme.*</c>; this class is internal to keep the surface tight.
+    /// </summary>
+    internal sealed class ThemeStore
+    {
+        public static ThemeStore Instance { get; } = new();
+
+        private sealed class Entry
+        {
+            public string Name;
+            public string BaseName;
+            public Dictionary<string, ColorSpec> Colors;
+            public Dictionary<string, StyleDef> Styles;
+            public string Src;
+            public Entry ResolvedBase;
+            // 注册时的解析块引用：同 src 再注册时若还是同一个实例（DocumentCache 命中）就判定没变。
+            // ReplaceFromSrc / 旧调用没有块引用（null），永远当作变了
+            public ThemeBlock Block;
+        }
+
+        /// <summary>
+        /// 带块引用的 <c>Register</c> 的结果：<c>Unchanged</c> = 同 (name, src) 且同一个解析块实例，什么都没改；
+        /// <c>Replaced</c> = 同 (name, src) 换了实例（新会话 / 缓存失效 / 没有块引用）——值可能不同，保守当作变了。
+        /// 2026-09-14 document-load spec §6.1。
+        /// </summary>
+        public enum RegisterOutcome { Added, Replaced, Unchanged }
+
+        private readonly Dictionary<string, Entry> _themes = new();
+
+        public IReadOnlyCollection<string> Available => _themes.Keys;
+
+        /// <summary>Colour-only overload: a theme that declares no style packs.</summary>
+        public void Register(string name, string baseName,
+                             IReadOnlyDictionary<string, ColorSpec> colors, string src)
+            => Register(name, baseName, colors, styles: null, src);
+
+        public void Register(string name, string baseName,
+                             IReadOnlyDictionary<string, ColorSpec> colors,
+                             IReadOnlyDictionary<string, StyleDef> styles, string src)
+            => Register(name, baseName, colors, styles, src, block: null);
+
+        public RegisterOutcome Register(string name, string baseName,
+                             IReadOnlyDictionary<string, ColorSpec> colors,
+                             IReadOnlyDictionary<string, StyleDef> styles, string src,
+                             ThemeBlock block)
+        {
+            var outcome = RegisterOutcome.Added;
+            if (_themes.TryGetValue(name, out var existing))
+            {
+                if (existing.Src != src)
+                    throw new ParseException(
+                        $"duplicate <Theme name=\"{name}\"> in '{existing.Src}' and '{src}'");
+                // 同一份解析产物再来一遍（另一个文档 Import 了同一个 src、命中 DocumentCache）：
+                // 值必然相同，不改写，也让调用方知道不必广播 Theme.Changed
+                if (block != null && ReferenceEquals(existing.Block, block))
+                    return RegisterOutcome.Unchanged;
+                outcome = RegisterOutcome.Replaced;
+            }
+            // Same (name, src) pair: replace, not no-op. Two cases hit this branch:
+            //   (1) Re-open a Screen whose Import brings the same theme back in —
+            //       the values are identical, so replacement is observably a no-op.
+            //   (2) Editor cycle "edit theme XML → re-Play" with Domain Reload
+            //       disabled — the static singleton persists from the previous
+            //       session and the new XML carries DIFFERENT values. An
+            //       idempotent skip here silently drops the author's edit; a
+            //       replace propagates it correctly. (Hot-reload during Play
+            //       routes through ReplaceFromSrc instead of Register, so its
+            //       value-update path is unaffected either way.)
+            _themes[name] = new Entry
+            {
+                Name = name,
+                BaseName = baseName,
+                Colors = new Dictionary<string, ColorSpec>(colors),
+                Styles = styles == null
+                    ? new Dictionary<string, StyleDef>()
+                    : new Dictionary<string, StyleDef>(styles),
+                Src = src,
+                Block = block,
+            };
+            return outcome;
+        }
+
+        /// <summary>
+        /// <paramref name="name"/> 的整条 base 链（含自身，从它往祖先走）。<see cref="ResolveBases"/> 之后才准确；
+        /// 未注册的名字返回空。<c>RegisterThemesAndAutoSet</c> 用它判断一次加载有没有碰到当前主题的解析结果——
+        /// 祖先被替换时当前主题本身没被碰，只看名字会漏掉。
+        /// </summary>
+        public IEnumerable<string> ChainOf(string name)
+        {
+            if (name == null || !_themes.TryGetValue(name, out var e)) yield break;
+            var guard = 0;
+            for (var cur = e; cur != null && guard < 64; cur = cur.ResolvedBase, guard++)
+                yield return cur.Name;
+        }
+
+        public void ReplaceFromSrc(string src,
+            IReadOnlyList<(string name, string baseName,
+                           IReadOnlyDictionary<string, ColorSpec> colors,
+                           IReadOnlyDictionary<string, StyleDef> styles)> blocks)
+        {
+            // Hot reload: drop everything previously from src, then register new.
+            var toRemove = new List<string>();
+            foreach (var kv in _themes)
+                if (kv.Value.Src == src) toRemove.Add(kv.Key);
+            foreach (var k in toRemove) _themes.Remove(k);
+            foreach (var b in blocks)
+                Register(b.name, b.baseName, b.colors, b.styles, src);
+            ResolveBases();
+        }
+
+        public void ResolveBases()
+        {
+            foreach (var e in _themes.Values)
+            {
+                if (string.IsNullOrEmpty(e.BaseName)) { e.ResolvedBase = null; continue; }
+                if (!_themes.TryGetValue(e.BaseName, out var b))
+                    throw new ParseException(
+                        $"<Theme name=\"{e.Name}\" base=\"{e.BaseName}\">: " +
+                        $"base theme '{e.BaseName}' not found");
+                e.ResolvedBase = b;
+            }
+            // Cycle: DFS from each theme, fail if we revisit.
+            foreach (var e in _themes.Values)
+            {
+                var seen = new HashSet<string>();
+                for (var cur = e; cur != null; cur = cur.ResolvedBase)
+                {
+                    if (!seen.Add(cur.Name))
+                        throw new ParseException(
+                            $"<Theme> base cycle starting at '{e.Name}': " +
+                            string.Join(" → ", seen) + $" → {cur.Name}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// True when any registered theme declares a <c>&lt;Style&gt;</c>. Screens check this before
+        /// re-deriving their <c>class=</c> nodes, so a project that themes only colours — every
+        /// project until now — pays nothing on Open or ReSolve.
+        /// </summary>
+        public bool AnyThemeStyles
+        {
+            get
+            {
+                foreach (var e in _themes.Values)
+                    if (e.Styles != null && e.Styles.Count > 0) return true;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// <paramref name="globalStyles"/> with the active theme's packs folded over it. Returns the
+        /// argument itself when nothing applies, which callers use as a cheap "nothing to re-merge".
+        /// </summary>
+        public IReadOnlyDictionary<StyleKey, StyleDef> ResolveStyles(
+            IReadOnlyDictionary<StyleKey, StyleDef> globalStyles, string activeTheme)
+        {
+            if (string.IsNullOrEmpty(activeTheme) || !_themes.ContainsKey(activeTheme))
+                return globalStyles;
+
+            // ThemeStyleResolver walks base= chains itself and lives in Core so the lint CLI shares
+            // it; hand it a view of what this store holds.
+            var view = new Dictionary<string, ThemeBlock>(_themes.Count);
+            foreach (var e in _themes.Values)
+            {
+                var block = new ThemeBlock { Name = e.Name, BaseName = e.BaseName };
+                if (e.Styles != null)
+                    foreach (var kv in e.Styles) block.Styles[kv.Key] = kv.Value;
+                view[e.Name] = block;
+            }
+            return Template.ThemeStyleResolver.Resolve(globalStyles, view, activeTheme);
+        }
+
+        public ColorSpec? LookupChained(string themeName, string token)
+        {
+            if (!_themes.TryGetValue(themeName, out var e)) return null;
+            for (var cur = e; cur != null; cur = cur.ResolvedBase)
+            {
+                if (cur.Colors.TryGetValue(token, out var c)) return c;
+            }
+            return null;
+        }
+
+        public void Clear() => _themes.Clear();
+    }
+}

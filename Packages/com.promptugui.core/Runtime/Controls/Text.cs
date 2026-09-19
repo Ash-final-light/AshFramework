@@ -1,0 +1,253 @@
+using System;
+using PromptUGUI.Application;
+using PromptUGUI.Controls.Internal;
+using PromptUGUI.Registry;
+using TMPro;
+using UnityEngine;
+
+namespace PromptUGUI.Controls
+{
+    public sealed class Text : Control
+    {
+        private TMP_Text _tmp;
+        private string _fontType = "default";
+        private bool _autosize;
+
+        internal TMP_Text TmpComponent => _tmp;
+
+        public override void OnAttached()
+        {
+            _tmp = GameObject.GetComponent<TMP_Text>();
+            if (_tmp == null)
+            {
+                _tmp = GameObject.AddComponent<TextMeshProUGUI>();
+                // Everything TMP's Awake would set, now — the Awake itself may run long after this
+                // node has been measured and applied (a row bound into a hidden page). See TmpPrimer.
+                TmpPrimer.Prime(_tmp);
+                _tmp.color = ProceduralBuilders.DefaultLabelColor;
+            }
+            // TMP defaults to true, which silently put every <Text> in the raycast list — text is
+            // click-through unless the author writes raycastTarget="true" (spec 2026-09-15 §3).
+            _tmp.raycastTarget = false;
+            ApplyFont();
+            PromptUGUI.Application.UI.Locale.Changed += ApplyFont;
+        }
+
+        public override void Dispose()
+        {
+            PromptUGUI.Application.UI.Locale.Changed -= ApplyFont;
+            base.Dispose();
+        }
+
+        private void ApplyFont()
+        {
+            FontApplier.Apply(_tmp, _fontType);
+        }
+
+        [UIAttr("text"), Preserve]
+        public string TextValue
+        {
+            set => _tmp.text = value ?? "";
+        }
+
+        internal override string PeekDefaultText() => _tmp != null ? _tmp.text : null;
+
+        [UIAttr("fontSize"), Preserve]
+        public float Size
+        {
+            set
+            {
+                _tmp.fontSize = value;
+                if (_autosize) ApplyAutosize();
+            }
+        }
+
+        [UIAttr, Preserve]
+        public bool Autosize
+        {
+            set
+            {
+                _autosize = value;
+                ApplyAutosize();
+            }
+        }
+
+        private void ApplyAutosize()
+        {
+            if (_tmp == null) return;
+            if (_autosize)
+            {
+                var size = _tmp.fontSize;
+                _tmp.fontSizeMin = size;
+                _tmp.fontSizeMax = size;
+                _tmp.characterWidthAdjustment = 50f;
+                _tmp.enableAutoSizing = true;
+            }
+            else
+            {
+                _tmp.enableAutoSizing = false;
+            }
+        }
+
+        [UIAttr(IsColor = true), Preserve]
+        public string Color
+        {
+            set
+            {
+                var spec = UI.Theme.ResolveSpec(value);
+                Internal.GradientStopWarning.IfMoved(spec, GameObject, "<Text> color=");
+                if (spec.IsGradient)
+                {
+                    _tmp.enableVertexGradient = true;
+                    _tmp.colorGradient = spec.ToVertexGradient();
+                    _tmp.color = UnityEngine.Color.white;
+                }
+                else
+                {
+                    _tmp.enableVertexGradient = false;
+                    _tmp.color = spec.Start;
+                }
+            }
+        }
+
+        [UIAttr, Preserve]
+        public string Align
+        {
+            set
+            {
+                var (h, v) = ParseAlign(value);
+                _tmp.horizontalAlignment = h;
+                _tmp.verticalAlignment = v;
+            }
+        }
+
+        private static readonly char[] AlignSeparators = { '-', ' ' };
+
+        // Maps the `align` string onto TMP's two independent alignment axes. Tokens are
+        // hyphen- or space-separated and order-independent (e.g. "bottom-right" == "right-bottom");
+        // the last token seen per axis wins. Horizontal defaults to Left, vertical to Middle, so the
+        // legacy `left`/`center`/`right` values keep their old vertically-centred behaviour while the
+        // full TMP grid (6 horizontal × 6 vertical) is now reachable.
+        internal static (HorizontalAlignmentOptions, VerticalAlignmentOptions) ParseAlign(string value)
+        {
+            var h = HorizontalAlignmentOptions.Left;
+            var v = VerticalAlignmentOptions.Middle;
+            if (!string.IsNullOrEmpty(value))
+            {
+                foreach (var raw in value.Split(AlignSeparators, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    switch (raw.Trim().ToLowerInvariant())
+                    {
+                        case "left": h = HorizontalAlignmentOptions.Left; break;
+                        case "center": h = HorizontalAlignmentOptions.Center; break;
+                        case "right": h = HorizontalAlignmentOptions.Right; break;
+                        case "justified": h = HorizontalAlignmentOptions.Justified; break;
+                        case "flush": h = HorizontalAlignmentOptions.Flush; break;
+                        case "geo": h = HorizontalAlignmentOptions.Geometry; break;
+                        case "top": v = VerticalAlignmentOptions.Top; break;
+                        case "middle": v = VerticalAlignmentOptions.Middle; break;
+                        case "bottom": v = VerticalAlignmentOptions.Bottom; break;
+                        case "baseline": v = VerticalAlignmentOptions.Baseline; break;
+                        case "midline": v = VerticalAlignmentOptions.Geometry; break;
+                        case "capline": v = VerticalAlignmentOptions.Capline; break;
+                        default:
+                            throw new ArgumentException(
+                                $"align token '{raw}' is not a horizontal "
+                                + "(left|center|right|justified|flush|geo) or vertical "
+                                + "(top|middle|bottom|baseline|midline|capline) keyword");
+                    }
+                }
+            }
+            return (h, v);
+        }
+
+        [UIAttr, Preserve]
+        public bool Wrap
+        {
+#if UNITY_2023_1_OR_NEWER
+            set => _tmp.textWrappingMode = value ? TextWrappingModes.Normal : TextWrappingModes.NoWrap;
+#else
+            set => _tmp.enableWordWrapping = value;
+#endif
+        }
+
+        // What to do once auto-sizing (if any) has done its best and the text still doesn't fit the
+        // rect. Orthogonal to `wrap` and `autosize`. Omitting the attribute leaves TMP's default
+        // (Overflow) untouched, so existing UIs are unaffected.
+        [UIAttr, Preserve]
+        public string Overflow
+        {
+            set => _tmp.overflowMode = ParseOverflow(value);
+        }
+
+        internal static TextOverflowModes ParseOverflow(string value)
+        {
+            switch ((value ?? "").Trim().ToLowerInvariant())
+            {
+                case "overflow": return TextOverflowModes.Overflow;
+                case "ellipsis": return TextOverflowModes.Ellipsis;
+                case "truncate": return TextOverflowModes.Truncate;
+                default:
+                    throw new ArgumentException(
+                        $"overflow value '{value}' is not one of overflow|ellipsis|truncate");
+            }
+        }
+
+        private bool? _raycastAuthored;
+
+        /// <summary>
+        /// Whether the text catches the pointer. Default false (spec 2026-09-15 §3); turn it on
+        /// for a label that must be hit in its own right — inside a control it is never needed,
+        /// the control's own hit layer is under it.
+        /// </summary>
+        [UIAttr, Preserve]
+        public bool RaycastTarget
+        {
+            set
+            {
+                _raycastAuthored = value;
+                _tmp.raycastTarget = value;
+            }
+        }
+
+        // Cleared per pass so a variant-only raycastTarget.mobile turns off again when the variant
+        // leaves — a setter that does not run is the only signal that the attribute is gone.
+        internal override void OnBeforeApply() => _raycastAuthored = null;
+
+        internal override void OnAfterApply()
+        {
+            // The per-pass settle: an attribute the pass did not declare reads as the default.
+            // (Not a workaround for TMP's Awake — OnAttached defuses that at creation, which is the
+            // only place that also covers a node whose Awake runs after this pass.)
+            _tmp.raycastTarget = _raycastAuthored ?? false;
+        }
+
+        [UIAttr, Preserve]
+        public string Font
+        {
+            set
+            {
+                _fontType = string.IsNullOrEmpty(value) ? "default" : value;
+                ApplyFont();
+            }
+        }
+
+        public override Vector2? GetNativeSize()
+        {
+            if (_tmp == null || string.IsNullOrEmpty(_tmp.text)) return null;
+            // Measure the text's *unconstrained* natural size (TMP's k_LargePositiveVector2 margin),
+            // NOT _tmp.preferredHeight — that getter measures against the live RectTransform width.
+            // On a ReSolve (e.g. locale switch) the rect still holds the PREVIOUS solve's width, so a
+            // short→long text change (narrow zh → wide en) wrapped the new text against that stale
+            // narrow width and doubled the reported height (the demo plaque <Text anchor="center">
+            // jumped 21→42 px on zh→en). GetPreferredValues ignores the rect, giving the true
+            // unwrapped height — consistent with the fresh-build path (rect width 0 → also unconstrained).
+            return _tmp.GetPreferredValues(_tmp.text);
+        }
+
+        // TMP_Text is itself a live ILayoutElement, so inside a V/HStack an author-omitted axis is left
+        // to TMP's own dynamic measurement instead of a frozen native snapshot — height then follows the
+        // wrapped content. See Control.UsesIntrinsicLayoutSize. Free-positioning still uses GetNativeSize.
+        protected internal override bool UsesIntrinsicLayoutSize => true;
+    }
+}

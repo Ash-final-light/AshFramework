@@ -1,0 +1,328 @@
+using System.Collections.Generic;
+using NUnit.Framework;
+using PromptUGUI.Application;
+using PromptUGUI.Controls;
+using R3;
+using UnityEngine;
+
+namespace PromptUGUI.Tests.EditMode.Controls
+{
+    public class DropdownTests
+    {
+        [SetUp] public void SetUp() => UI.ResetForTests();
+        [TearDown] public void TearDown() => UI.ResetForTests();
+
+        private Dropdown OpenDropdown(string attrs = "")
+        {
+            string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'>
+  <Screen name='S'><Dropdown id='dd' " + attrs + @"/></Screen>
+</PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            return UI.Open("S").Get<Dropdown>("dd");
+        }
+
+        private static UnityEngine.Transform TemplateOf(Dropdown dd) =>
+            dd.GameObject.transform.Find("Template");
+
+        [Test]
+        public void TextColor_sets_caption_color()
+        {
+            var dd = OpenDropdown("textColor='#FF0000'");
+            var caption = dd.GameObject.GetComponentInChildren<TMPro.TMP_Dropdown>().captionText;
+            Assert.AreEqual(1f, caption.color.r);
+            Assert.AreEqual(0f, caption.color.g);
+            Assert.AreEqual(0f, caption.color.b);
+        }
+
+        [Test]
+        public void PopupSprite_and_color_apply_to_template_bg()
+        {
+            var dd = OpenDropdown(@"popupSprite='PromptUGUI/Defaults/pugui#pugui_9slice_mask' popupColor='#00FF00'");
+            var bg = TemplateOf(dd).GetComponent<UnityEngine.UI.Image>();
+            Assert.AreEqual("pugui_9slice_mask", bg.sprite.name);
+            Assert.AreEqual(0f, bg.color.r);
+            Assert.AreEqual(1f, bg.color.g);
+        }
+
+        [Test]
+        public void Popup_defaults_unchanged_without_popup_attrs()
+        {
+            var dd = OpenDropdown();
+            var bg = TemplateOf(dd).GetComponent<UnityEngine.UI.Image>();
+            Assert.AreEqual(UnityEngine.Color.white, bg.color);  // DefaultPopupBgColor
+            Assert.AreEqual("pugui_9slice_round", bg.sprite.name);
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            Assert.IsTrue(vp.GetComponent<UnityEngine.UI.Mask>().enabled);
+            Assert.IsNull(vp.GetComponent<UnityEngine.UI.RectMask2D>());
+        }
+
+        [Test]
+        public void PopupMask_empty_swaps_stencil_for_RectMask2D()
+        {
+            var dd = OpenDropdown(@"popupMask=''");
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            Assert.IsTrue(vp.GetComponent<UnityEngine.UI.RectMask2D>().enabled);
+            var mask = vp.GetComponent<UnityEngine.UI.Mask>();
+            Assert.IsTrue(mask == null || !mask.enabled);
+            var img = vp.GetComponent<UnityEngine.UI.Image>();
+            Assert.IsTrue(img == null || !img.enabled);
+        }
+
+        [Test]
+        public void PopupMask_custom_sprite_applies_to_viewport()
+        {
+            var dd = OpenDropdown(@"popupMask='PromptUGUI/Defaults/pugui#pugui_9slice_mask'");
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            var img = vp.GetComponent<UnityEngine.UI.Image>();
+            Assert.AreEqual("pugui_9slice_mask", img.sprite.name);
+            Assert.IsTrue(vp.GetComponent<UnityEngine.UI.Mask>().enabled);
+            Assert.IsFalse(vp.GetComponent<UnityEngine.UI.Mask>().showMaskGraphic);
+        }
+
+        [Test]
+        public void PopupMask_unset_auto_squares_when_popupSprite_empty()
+        {
+            var dd = OpenDropdown(@"popupSprite=''");
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            Assert.IsTrue(vp.GetComponent<UnityEngine.UI.RectMask2D>() != null
+                          && vp.GetComponent<UnityEngine.UI.RectMask2D>().enabled,
+                "popupSprite='' with no explicit popupMask should auto-square the popup viewport clip");
+            var mask = vp.GetComponent<UnityEngine.UI.Mask>();
+            Assert.IsTrue(mask == null || !mask.enabled, "stencil Mask must be off when auto-squared");
+        }
+
+        [Test]
+        public void PopupMask_unset_stays_rounded_when_popupSprite_present()
+        {
+            var dd = OpenDropdown();  // default popup bg has the rounded sprite
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            var mask = vp.GetComponent<UnityEngine.UI.Mask>();
+            Assert.IsNotNull(mask);
+            Assert.IsTrue(mask.enabled, "default popup bg sprite present → rounded stencil mask");
+            Assert.IsNull(vp.GetComponent<UnityEngine.UI.RectMask2D>());
+        }
+
+        [Test]
+        public void Explicit_popupMask_wins_over_popupSprite_autotrack()
+        {
+            var dd = OpenDropdown(@"popupSprite='' popupMask='PromptUGUI/Defaults/pugui#pugui_9slice_mask'");
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            var mask = vp.GetComponent<UnityEngine.UI.Mask>();
+            Assert.IsNotNull(mask);
+            Assert.IsTrue(mask.enabled, "explicit popupMask wins despite popupSprite=''");
+            Assert.AreEqual("pugui_9slice_mask", vp.GetComponent<UnityEngine.UI.Image>().sprite.name);
+            Assert.IsNull(vp.GetComponent<UnityEngine.UI.RectMask2D>());
+        }
+
+        [Test]
+        public void Explicit_empty_popupMask_stays_square_even_with_popupSprite_present()
+        {
+            var dd = OpenDropdown(@"popupMask=''");  // default popup bg sprite present, but explicit '' wins
+            var vp = TemplateOf(dd).Find("Viewport").gameObject;
+            Assert.IsTrue(vp.GetComponent<UnityEngine.UI.RectMask2D>().enabled);
+            var mask = vp.GetComponent<UnityEngine.UI.Mask>();
+            Assert.IsTrue(mask == null || !mask.enabled);
+        }
+
+        [Test]
+        public void BindOptions_strings_populates_tmp_dropdown()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var d = screen.Get<Dropdown>("d");
+
+            d.BindOptions(Observable.Return<IEnumerable<string>>(new[] { "Low", "High" }));
+            var tmp = d.GameObject.GetComponentInChildren<TMPro.TMP_Dropdown>();
+            Assert.AreEqual(2, tmp.options.Count);
+            Assert.AreEqual("Low", tmp.options[0].text);
+        }
+
+        // Same runtime-owned-state class as Tab/Toggle isOn: a declared value is the INITIAL
+        // selection only. A window resize runs Screen.ReSolve, which must NOT snap a user's
+        // dropdown choice back to the declared value.
+        [Test]
+        public void Value_RuntimeChange_Survives_ReSolve()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d' value='1'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var d = screen.Get<Dropdown>("d");
+            d.BindOptions(Observable.Return<IEnumerable<string>>(new[] { "A", "B", "C" }));
+            d.Value = 2;                     // user selects C
+            Assert.AreEqual(2, d.Value);
+
+            screen.ReSolve();                // window resize / scale recompute
+
+            Assert.AreEqual(2, d.Value, "user's dropdown selection survives ReSolve (not reset to declared value=1)");
+        }
+
+        [Test]
+        public void OnSelected_fires_when_value_setter_changes()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var d = screen.Get<Dropdown>("d");
+            d.BindOptions(Observable.Return<IEnumerable<string>>(new[] { "A", "B", "C" }));
+            int? last = null;
+            d.OnSelected.Subscribe(i => last = i);
+            d.Value = 2;
+            Assert.AreEqual(2, last);
+        }
+
+        [Test]
+        public void Geometry_ArrowSizeIsTwentyTwenty()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var arrow = d.GameObject.transform.Find("Arrow") as RectTransform;
+            Assert.IsNotNull(arrow);
+            Assert.AreEqual(new Vector2(20, 20), arrow.sizeDelta);
+        }
+
+        [Test]
+        public void Geometry_ArrowAnchoredPositionMinusFifteen()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var arrow = d.GameObject.transform.Find("Arrow") as RectTransform;
+            Assert.AreEqual(new Vector2(-15, 0), arrow.anchoredPosition);
+        }
+
+        [Test]
+        public void Viewport_HasStencilMaskAndImageWithAlphaOne()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var viewport = d.GameObject.GetComponentInChildren<UnityEngine.UI.Mask>(includeInactive: true);
+            Assert.IsNotNull(viewport, "Viewport should use stencil Mask (default prefab parity)");
+            Assert.IsFalse(viewport.showMaskGraphic, "Mask graphic must be hidden");
+
+            var img = viewport.GetComponent<UnityEngine.UI.Image>();
+            Assert.IsNotNull(img, "Mask requires Image graphic on same GO");
+            Assert.AreEqual(1f, img.color.a, "alpha=1 critical to avoid 4af322b alpha-discard regression");
+        }
+
+        [Test]
+        public void Viewport_HasNoRectMask2D()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var rm2d = d.GameObject.GetComponentInChildren<UnityEngine.UI.RectMask2D>(includeInactive: true);
+            Assert.IsNull(rm2d, "RectMask2D should be replaced by stencil Mask");
+        }
+
+        [Test]
+        public void Viewport_ReservesThicknessPlusSpacing()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var viewport = d.GameObject.transform.Find("Template/Viewport") as RectTransform;
+            Assert.IsNotNull(viewport);
+            Assert.AreEqual(-17f, viewport.sizeDelta.x, "viewport sizeDelta.x = -(thickness + spacing) = -(20 - 3) reserves room for the bar");
+        }
+
+        [Test]
+        public void Geometry_ItemHeightIsTwenty()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var item = d.GameObject.transform.Find("Template/Viewport/Content/Item") as RectTransform;
+            Assert.IsNotNull(item);
+            Assert.AreEqual(20f, item.sizeDelta.y);
+        }
+
+        [Test]
+        public void Geometry_ItemBackgroundIsSimpleHighlightedF5()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var bgRt = d.GameObject.transform.Find("Template/Viewport/Content/Item/Item Background") as RectTransform;
+            Assert.IsNotNull(bgRt, "Item Background must be a child node (default prefab parity)");
+            var bg = bgRt.GetComponent<UnityEngine.UI.Image>();
+            Assert.AreEqual(UnityEngine.UI.Image.Type.Simple, bg.type);
+            Assert.IsNull(bg.sprite, "Item Background uses no sprite (highlighted color band only)");
+            Assert.That(bg.color.r, Is.EqualTo(0.961f).Within(0.005f));
+            Assert.That(bg.color.g, Is.EqualTo(0.961f).Within(0.005f));
+            Assert.AreEqual(1f, bg.color.a);
+        }
+
+        [Test]
+        public void Geometry_ItemCheckmarkSizeAndPos()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var ck = d.GameObject.transform.Find("Template/Viewport/Content/Item/Item Checkmark") as RectTransform;
+            Assert.IsNotNull(ck);
+            Assert.AreEqual(new Vector2(20, 20), ck.sizeDelta);
+            Assert.AreEqual(new Vector2(10, 0), ck.anchoredPosition);
+        }
+
+        [Test]
+        public void Geometry_ItemLabelOffset()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var lbl = d.GameObject.transform.Find("Template/Viewport/Content/Item/Item Label") as RectTransform;
+            Assert.IsNotNull(lbl);
+            Assert.AreEqual(new Vector2(20, 1.5f), lbl.offsetMin);
+            Assert.AreEqual(new Vector2(-10, -1.5f), lbl.offsetMax);
+        }
+
+        [Test]
+        public void Has_ScrollbarChildWithCorrectGeometry()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var sb = d.GameObject.transform.Find("Template/Scrollbar") as RectTransform;
+            Assert.IsNotNull(sb, "Template/Scrollbar must exist (default prefab parity)");
+            Assert.AreEqual(new Vector2(1, 0), sb.anchorMin);
+            Assert.AreEqual(new Vector2(1, 1), sb.anchorMax);
+            Assert.AreEqual(new Vector2(20, 0), sb.sizeDelta);
+
+            var scrollbar = sb.GetComponent<UnityEngine.UI.Scrollbar>();
+            Assert.IsNotNull(scrollbar);
+            Assert.AreEqual(UnityEngine.UI.Scrollbar.Direction.BottomToTop, scrollbar.direction);
+        }
+
+        [Test]
+        public void Wired_VerticalScrollbarOnScrollRect()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'><Dropdown id='d'/></Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var d = UI.Open("S").Get<Dropdown>("d");
+            var template = d.GameObject.transform.Find("Template");
+            var scrollRect = template.GetComponent<UnityEngine.UI.ScrollRect>();
+            Assert.IsNotNull(scrollRect.verticalScrollbar);
+            Assert.AreEqual(UnityEngine.UI.ScrollRect.ScrollbarVisibility.AutoHideAndExpandViewport,
+                scrollRect.verticalScrollbarVisibility);
+            Assert.AreEqual(-3f, scrollRect.verticalScrollbarSpacing);
+        }
+    }
+}

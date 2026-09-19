@@ -1,0 +1,400 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PromptUGUI version="1">
+
+  <!-- ═══════════ 皮肤：农场（像素）↔ 玻璃（磨砂）═══════════
+       这份示例演示的是 <Style> / class= 这个「属性宏」被 <Theme> 接管之后能做到什么：
+       同一棵 XML 树，一套主题渲染成像素木框，另一套渲染成磨砂玻璃，**不重建任何 GameObject**。
+       C# 调 UI.Theme.Set("farm"/"glass")，已打开的 Screen 自己 ReSolve。
+
+       换皮这件事**整个由 <Theme> 一个人管**。变体在这份文件里只剩一处，就是 <Screen> 的
+       scale-mode —— 那是主题唯一够不着的东西（见下面 CommonControls 那段注释）。
+
+       三条规矩（都有 lint 兜着）：
+       1) 全局 <Style> 是**基线**，<Theme> 里的同名 <Style> 只写差异。基线不能省 ——
+          class= 在展开期只认全局池，只写在 <Theme> 里的样式根本引用不到
+          （lint: PUI-THEME-STYLE-NO-BASELINE）。
+       2) 每个主题必须解出**同一套属性名**。某个名字 A 主题有、B 主题没有，切到 B 时它不会被
+          重置，控件静默留着 A 的值（lint: PUI-THEME-STYLE-SHAPE）。
+          **例外是形状那一组**（radius / glass / border* / *Radius）：它们不是「值」而是
+          「开关」—— 写了就挂上 SDF 面并把 Image 退休，所以农场侧必须一个都不写，玻璃侧整套
+          写。ProceduralSurface 每一 pass 重算模式，主题不写就等于关掉表面、把贴图还回去，
+          自己会复位。反过来给它们加「基线」才是错的：radius="" 照样挂面，木头 9-slice 当场
+          消失（lint 会用 PUI-PROC-SPRITE-CONFLICT 骂回来）。
+       3) class= 要写在**模板体内**的节点上。写在调用点 <Skin class="..."/> 上不跟随主题：
+          invocation 节点展开后就不存在了（lint: PUI-THEME-STYLE-ON-INVOCATION）。 -->
+
+  <!-- 面板底的两层皮。<Image> 有 sprite 没有 glass，<Frame> 反过来 —— 一个节点画不了两套皮，
+       所以叠两层，让主题用 hidden 决定哪层露出来。hidden 是公共属性，<Style> 能设。 -->
+  <Style name="skin-wood"  hidden="false"/>
+  <Style name="skin-glass" hidden="true"
+         frost="0.6" depth="5" dispersion="0.3" lightAngle="-25" lightIntensity="0.55"
+         saturation="1.3" noise="0.03"/>
+
+  <!-- 其余控件**原地**换皮，不用叠层。关键是：内置控件的每一个内层都有 XML 钩子
+       （<Toggle checkmark=>、<Slider fill= handle=>、<Dropdown arrow= popupSprite=>、
+       <Progress fill= bg= frame=>；滚动条则是一个真正的 <Scrollbar> 子元素，列表和下拉都挂它，
+       同一个 class= 包穿在三根条上），所以整套内置控件都能被主题换掉，
+       不只是最外面那张底图。只换外层的话，玻璃皮下面会留一堆木头勾选框和木头滑块。
+
+       农场侧写的就是**内置默认值**（内置皮肤本来就是像素农场风），玻璃侧把 9-slice 结构层清成
+       none + 半透明白，字形（勾、箭头）留着、只改成墨色。
+
+       注意这里**一个形状属性都没有** —— radius / glass / border* 全在玻璃那侧（见文件头第 2 条）。
+       农场皮的形状就是那张 9-slice 贴图本身。 -->
+  <Style name="btn"      sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round"
+         color="#E8D2A8" hoverColor="#F5E6C8" textColor="#4A3018" pressedOffset="0,-1"/>
+  <Style name="tab"      sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round"
+         color="#E8D2A8" selectedColor="#CDEBA8" textColor="#4A3018"/>
+  <Style name="input"    sprite="PromptUGUI/Defaults/pugui#pugui_9slice_inset" color="white" textColor="#4A3322"/>
+  <Style name="toggle"   sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round" color="white" textColor="#4A3322"
+         checkmark="PromptUGUI/Defaults/pugui#pugui_checkmark" checkmarkColor="white"/>
+  <Style name="slider"   sprite="PromptUGUI/Defaults/pugui#pugui_9slice_inset" color="white"
+         fill="PromptUGUI/Defaults/pugui#pugui_9slice_round"  fillColor="white"
+         handle="PromptUGUI/Defaults/pugui#pugui_knob"        handleColor="white"/>
+  <Style name="dropdown" sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round" color="white" textColor="#4A3322"
+         arrow="PromptUGUI/Defaults/pugui#pugui_caret"        arrowColor="white"
+         popupSprite="PromptUGUI/Defaults/pugui#pugui_9slice_round" popupColor="white"
+         itemColor="#F5F5F5" itemTextColor="#4A3322"
+         checkmark="PromptUGUI/Defaults/pugui#pugui_checkmark" checkmarkColor="white"/>
+  <Style name="list"     sprite="PromptUGUI/Defaults/pugui#pugui_9slice_inset" color="white/0.39"/>
+  <!-- 滚动条是 <Scrollbar> 子元素（列表、两个下拉各挂一个），一个包穿三根条：轨道 = 控件本身
+       （sprite / color），滑块 = handle / handleColor。玻璃侧把两张 9-slice 清成 none + 半透明白。 -->
+  <Style name="scrollbar" sprite="PromptUGUI/Defaults/pugui#pugui_9slice_inset" color="white"
+         handle="PromptUGUI/Defaults/pugui#pugui_9slice_round" handleColor="white"/>
+  <!-- Progress 的 fill/bg 默认就没有贴图（纯色层），所以这两个包只换颜色 —— 也顺带说明属性包
+       并不强求每个控件都交出 sprite。Carousel 的圆点同理。 -->
+  <Style name="progress" fillColor="#58A63C" bgColor="#E8CFA0"/>
+  <Style name="carousel" dotColor="#C8A878" dotSelectedColor="#5A3A20"/>
+  <!-- 轮播卡只交出 sprite：卡片底色由 C# BindItems 逐条填（运行时接管），主题不该跟它抢。 -->
+  <Style name="card"     sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round"/>
+
+  <!-- 农场：像素木质农场风。全局 <Style> 写的就是它，所以这里只剩颜色 token。 -->
+  <Theme name="farm">
+    <Color name="sky"           value="#BDE3EC"/>
+    <Color name="grass"         value="#8FCF6A"/>
+    <Color name="plaque"        value="#E8B86B"/>
+    <Color name="panel"         value="#FFFFFF"/>
+    <Color name="accent"        value="#A8D88C"/>
+    <Color name="sky-haze"      value="#DCEFF4"/>
+    <Color name="soil-a"        value="#8B5E3C"/>
+    <Color name="soil-b"        value="#A87E5C"/>
+  </Theme>
+
+  <!-- 玻璃：磨砂玻璃 UI 浮在同一张农场背景上。木层收起、玻璃层露出，
+       sprite 全部清成 none（`/alpha` 后缀只能写在**引用**侧，<Color value> 要把 alpha 烘进 8 位 hex）。 -->
+  <Theme name="glass">
+    <Style name="skin-wood"  hidden="true"/>
+    <Style name="skin-glass" hidden="false"/>
+    <!-- 每个包只写和农场不一样的那几项，其余从全局基线继承 —— 比如 checkmark 的**贴图**两边
+         一样，只有它的**颜色**换成墨色。
+         每个包的最后一行是**形状**：sprite 清成 none，改由 radius / glass / border* 自绘。
+         这一组只出现在这里，农场那边一个都没有 —— 这正是它能自己复位的原因。 -->
+    <Style name="btn"      sprite="none" color="white/0.22" hoverColor="white/0.40"
+           textColor="#1C2B33" pressedOffset="0,0"
+           radius="10" glass="true" borderWidth="1" borderColor="white/0.55"/>
+    <Style name="tab"      sprite="none" color="white/0.12" selectedColor="white/0.45"
+           textColor="#1C2B33"
+           radius="10,10,0,0" glass="true" borderWidth="1" borderColor="white/0.45"/>
+    <Style name="input"    sprite="none" color="white/0.28" textColor="#1C2B33"
+           radius="8" glass="true" borderWidth="1" borderColor="white/0.5"/>
+    <Style name="toggle"   sprite="none" color="white/0.28" textColor="#1C2B33"
+           checkmarkColor="#1C2B33"
+           radius="6" glass="true" borderWidth="1" borderColor="white/0.6"/>
+    <!-- 内层也有自己的形状钩子：fillRadius / handleRadius 各自管一层，跟着一起翻。 -->
+    <Style name="slider"   sprite="none" color="white/0.18"
+           fill="none"   fillColor="white/0.75"
+           handle="none" handleColor="white"
+           radius="pill" glass="true" fillRadius="pill" handleRadius="pill"/>
+    <!-- 弹出层不是玻璃（它是普通 Image，飘在玻璃之上），所以给个接近不透明的浅面保可读。 -->
+    <Style name="dropdown" sprite="none" color="white/0.28" textColor="#1C2B33"
+           arrowColor="#1C2B33"
+           popupSprite="none" popupColor="#EAF2F6"
+           itemColor="#00000000" itemTextColor="#1C2B33"
+           checkmarkColor="#1C2B33"
+           radius="10" glass="true" borderWidth="1" borderColor="white/0.5"/>
+    <Style name="list"     sprite="none" color="white/0.10"
+           radius="12" glass="true" borderWidth="1" borderColor="white/0.4"/>
+    <!-- 滚动条：轨道是控件主表面，滑块走 handle* —— 两层各自变成胶囊。 -->
+    <Style name="scrollbar" sprite="none" color="white/0.18" handle="none" handleColor="white/0.55"
+           radius="pill" handleRadius="pill"/>
+    <Style name="progress" fillColor="white/0.80" bgColor="white/0.20" radius="pill"/>
+    <Style name="carousel" dotColor="white/0.45" dotSelectedColor="#1C2B33"/>
+    <Style name="card"     sprite="none"/>
+
+    <Color name="sky"           value="#BDE3EC"/>
+    <Color name="grass"         value="#8FCF6A"/>
+    <Color name="plaque"        value="#E8B86B"/>
+    <Color name="panel"         value="#FFFFFF"/>
+    <Color name="accent"        value="#FFFFFF4D"/>
+    <Color name="sky-haze"      value="#DCEFF4"/>
+    <Color name="soil-a"        value="#8B5E3C"/>
+    <Color name="soil-b"        value="#A87E5C"/>
+  </Theme>
+
+  <!-- 面板底：两层叠着，主题决定露哪层。class= 写在体内的节点上（见文件头第 3 条）。 -->
+  <Template name="Skin">
+    <Param name="tone"   default="panel"/>
+    <Param name="radius" default="14"/>
+    <Frame anchor="stretch">
+      <Image class="skin-wood" anchor="stretch" raycastTarget="false"
+             sprite="PromptUGUI/Defaults/pugui#pugui_9slice_round" color="{{tone}}"/>
+      <Frame class="skin-glass" anchor="stretch" glass="true" radius="{{radius}}"
+             color="white/0.14" borderWidth="1" borderColor="white/0.45"/>
+    </Frame>
+  </Template>
+
+  <!-- ScrollList 行模板：可拖动排序 —— 左侧 grip 是把手（reorderHandle），提起时整行微放大、松手缩回 -->
+  <Template name="OptionRow">
+    <Animation on="lift" reverse-on="drop" scale="1:1.03" duration="0.12s">
+      <HStack id="row" height="32" spacing="8">
+        <Frame id="grip" width="12" color="white/0.25"/>
+        <Text id="label" fontSize="20"/>
+        <Frame width="0"/>
+      </HStack>
+    </Animation>
+  </Template>
+
+  <!-- Carousel 卡片模板（bg 底色 / 标题由 C# BindItems 填） -->
+  <Template name="DemoCard">
+    <Frame>
+      <Image id="bg" class="card" anchor="stretch"/>
+      <Text id="title" anchor="stretch" align="middle-center" fontSize="12" raycastTarget="false"/>
+    </Frame>
+  </Template>
+
+  <!-- 玻璃只看得见「相机渲染出来的那张图」—— Overlay 画布不在里面（uGUI 没有 grab pass），
+       所以玻璃面板永远看不见自己的兄弟节点。背景因此搬到一个 canvas="camera" 的 Screen 上：
+       农场主题下它就是原来的天空草地，玻璃主题下它就是玻璃底下被模糊的那层。
+       C# 里 UI.CanvasConfigurator 无条件给它接上主相机（Canvas.renderMode 的 getter 在没相机时
+       会谎报成 Overlay，别拿它做条件）。
+
+       它**不**跟着切 scale-mode：背景是像素美术，永远整数倍；只有上层 UI 需要高清。
+       两块画布各自一个 CanvasScaler，本来就能各走各的。 -->
+  <Screen name="Backdrop" canvas="camera" reference="640x360" reference.portrait="360x640"
+          scale-mode="pixel">
+    <!-- ── 为什么背景要长这样：玻璃是个**采样器**，只能展示它背后有的东西 ──
+         纯色是它的天敌。一片常量色模糊之后还是同一个常量，位移采样也取到同一个颜色，
+         于是 frost / depth / dispersion 三个参数**同时归零**，saturation 也没东西可提 ——
+         面板会退化成「半透明白板 + 一圈高光」，跟普通 <Frame> 长得一样。
+         所以这块背景要在**面板压着的那片区域**同时提供三样东西：
+
+           高频细节 → frost 才有东西可毁          （作物）
+           强边界   → depth/dispersion 才看得出扭曲（田垄之间的高对比横线）
+           饱和色   → saturation 才有东西可提      （crops.pxl 那套饱和配色）
+
+         再加一层缓慢漂移：玻璃底下持续在变，才看得出它是实时采样而不是一张贴图。 -->
+
+    <!-- 天空：竖直渐变。渐变本身对 frost 没用（模糊一条斜坡还是那条斜坡），
+         但它让面板上下缘的折射带取到不同的颜色，边缘立刻有了厚度感。 -->
+    <Image anchor="stretch" color="sky,sky-haze" raycastTarget="false"/>
+
+    <!-- 地平线：玻璃能看到的第一条强边界 -->
+    <Image anchor="top-stretch" margin="94,_,_,_" height="8" color="grass" raycastTarget="false"/>
+
+    <!-- 田垄：深浅交替四条，从地平线一路铺到底 —— 面板 85% 的面积压在这上面。
+         条带**本身**就是 depth 要的强横向边界：一条高对比水平线从面板圆角底下穿过去，
+         折射带会把它扭出一个肉眼可见的弯。作物负责 frost 要毁的高频细节。
+         每条的漂移幅度和时长都不同（越近越快越大）→ 视差。 -->
+    <VStack anchor="stretch" margin="102,0,0,0" margin.portrait="150,0,0,0" spacing="0">
+
+      <Frame width="stretch" height="stretch">
+        <Image anchor="stretch" color="soil-a" raycastTarget="false"/>
+        <Animation anchor="stretch" translate="0,0:10,0" duration="17s" on="loop" easing="in-out-cubic">
+          <HStack anchor="top-stretch" height="22" margin="10,_,_,18" spacing="62" spacing.portrait="34">
+            <Image size="22x22" sprite="farm:wheat" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:turnip" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:corn" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:carrot" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:wheat" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:eggplant" raycastTarget="false"/>
+            <Image size="22x22" sprite="farm:corn" raycastTarget="false"/>
+            <Frame width="stretch"/>
+          </HStack>
+        </Animation>
+      </Frame>
+
+      <Frame width="stretch" height="stretch">
+        <Image anchor="stretch" color="soil-b" raycastTarget="false"/>
+        <Animation anchor="stretch" translate="0,0:16,0" duration="14s" on="loop" easing="in-out-cubic">
+          <HStack anchor="top-stretch" height="24" margin="12,_,_,52" spacing="58" spacing.portrait="30">
+            <Image size="24x24" sprite="farm:tomato" raycastTarget="false"/>
+            <Image size="24x24" sprite="farm:sunflower" raycastTarget="false"/>
+            <Image size="24x24" sprite="farm:grape" raycastTarget="false"/>
+            <Image size="24x24" sprite="farm:tomato" raycastTarget="false"/>
+            <Image size="24x24" sprite="farm:apple" raycastTarget="false"/>
+            <Image size="24x24" sprite="farm:sunflower" raycastTarget="false"/>
+            <Frame width="stretch"/>
+          </HStack>
+        </Animation>
+      </Frame>
+
+      <Frame width="stretch" height="stretch">
+        <Image anchor="stretch" color="soil-a" raycastTarget="false"/>
+        <Animation anchor="stretch" translate="0,0:24,0" duration="11s" on="loop" easing="in-out-cubic">
+          <HStack anchor="top-stretch" height="26" margin="14,_,_,24" spacing="54" spacing.portrait="26">
+            <Image size="26x26" sprite="farm:pumpkin" raycastTarget="false"/>
+            <Image size="26x26" sprite="farm:strawberry" raycastTarget="false"/>
+            <Image size="26x26" sprite="farm:watermelon" raycastTarget="false"/>
+            <Image size="26x26" sprite="farm:pumpkin" raycastTarget="false"/>
+            <Image size="26x26" sprite="farm:eggplant" raycastTarget="false"/>
+            <Image size="26x26" sprite="farm:strawberry" raycastTarget="false"/>
+            <Frame width="stretch"/>
+          </HStack>
+        </Animation>
+      </Frame>
+
+      <Frame width="stretch" height="stretch">
+        <Image anchor="stretch" color="soil-b" raycastTarget="false"/>
+        <Animation anchor="stretch" translate="0,0:34,0" duration="9s" on="loop" easing="in-out-cubic">
+          <HStack anchor="top-stretch" height="30" margin="16,_,_,60" spacing="50" spacing.portrait="22">
+            <Image size="30x30" sprite="farm:watermelon" raycastTarget="false"/>
+            <Image size="30x30" sprite="farm:carrot" raycastTarget="false"/>
+            <Image size="30x30" sprite="farm:apple" raycastTarget="false"/>
+            <Image size="30x30" sprite="farm:grape" raycastTarget="false"/>
+            <Image size="30x30" sprite="farm:turnip" raycastTarget="false"/>
+            <Image size="30x30" sprite="farm:tomato" raycastTarget="false"/>
+            <Frame width="stretch"/>
+          </HStack>
+        </Animation>
+      </Frame>
+
+    </VStack>
+  </Screen>
+
+  <!-- 全文件唯一一处变体，也是主题唯一够不着的东西：scale-mode 挂在 <Screen> 上，而 <Screen>
+       写 class= 是 parse error（它不是控件，挂不住属性包），所以属性包换不了它。而玻璃是高清
+       程序化图形，跟 pixel 的整数倍缩放天生打架 —— 圆角和模糊会被整块放大成锯齿。
+       于是 C# 那边切主题时把同名 Variant 一起翻：UI.Variants.Set("glass", …) + UI.Theme.Set(…)。
+       两个开关同名，读起来是一件事；上面所有换皮都只走 Theme，不掺 Variant。 -->
+  <Screen name="CommonControls" reference="640x360" reference.portrait="360x640"
+          scale-mode="pixel" scale-mode.glass="auto">
+    <SafeArea>
+
+      <!-- 顶部固定：木牌/玻璃牌标题 + 常驻新手引导按钮 -->
+      <HStack anchor="top-stretch" height="44" padding="8" spacing="8">
+        <Frame width="220" width.portrait="132" height="30" raycastTarget="true">
+          <Skin tone="plaque" radius="8"/>
+          <Text anchor="center" fontSize="18" fontSize.portrait="12" raycastTarget="false">Common Controls Demo</Text>
+        </Frame>
+        <Frame width="0"/>
+        <Btn id="tutorialBtn" class="btn" width="100" width.portrait="86" height="28" fontSize="16">新手引导</Btn>
+        <!-- 皮肤切换：选项「农场/玻璃」由 C# BindSkinSwitcher 填充 → UI.Theme.Set + UI.Variants.Set -->
+        <Dropdown id="skin" class="dropdown" width="84" height="28"><Scrollbar class="scrollbar"/></Dropdown>
+      </HStack>
+
+      <!-- TabBar 分页（bind= 切页；Tab 是 layout child，只写 width/height） -->
+      <!-- 响应式：横屏顶部一行四个；竖屏（手机）变左侧竖轨——窄轨道(width 36)让 Tab 的 CJK label 逐字换行成竖排文字，
+           内容区右移(各 page 的 margin.portrait 左边距 = 轨道左 8 + 轨道宽 36 + 间隙 8 = 52)。
+           竖排靠「轨道宽落在 (字号, 2×字号) 之间」触发 TMP 逐字换行：width 36 / fontSize.portrait 22 → 稳定 1 字 1 行。
+           注意 direction / spacing 必须显式写基础值：它们是控件私有 [UIAttr]，变体未命中时 applier 直接跳过
+           （不像 anchor/width/height/margin 等公共属性会回落重算），不写基础值则横竖屏来回切后会卡在竖排。 -->
+      <TabBar id="tabs" anchor="top-stretch" anchor.portrait="stretch-left"
+              height="32" height.portrait="" width.portrait="36"
+              direction="horizontal" direction.portrait="vertical"
+              spacing="0" spacing.portrait="4"
+              margin="44,8,0,8" margin.portrait="44,_,8,8">
+        <Tab id="tabForm"    class="tab" width="stretch" width.portrait="stretch" height.portrait="120" text="表单输入" fontSize="15" fontSize.portrait="22"
+             bind="pageForm" isOn="true"/>
+        <Tab id="tabDisplay" class="tab" width="stretch" width.portrait="stretch" height.portrait="120" text="展示反馈" fontSize="15" fontSize.portrait="22"
+             bind="pageDisplay"/>
+        <Tab id="tabList"    class="tab" width="stretch" width.portrait="stretch" height.portrait="120" text="列表轮播" fontSize="15" fontSize.portrait="22"
+             bind="pageList"/>
+        <Tab id="tabModal"   class="tab" width="stretch" width.portrait="stretch" height.portrait="120" text="模态提示" fontSize="15" fontSize.portrait="22"
+             bind="pageModal"/>
+      </TabBar>
+
+      <!-- ① 表单输入（原 Settings 内容保留） -->
+      <Frame id="pageForm" anchor="stretch" margin="84,8,8,8" margin.portrait="52,8,8,52" raycastTarget="true">
+        <Skin/>
+        <VStack anchor="stretch" spacing="12" padding="8">
+          <InputField id="username" class="input" placeholder="Username" width="240" height="30"/>
+          <Toggle id="muteAudio" class="toggle">静音</Toggle>
+          <Slider id="masterVol" class="slider" min="0" max="1" value="0.8"/>
+          <Dropdown id="quality" class="dropdown"><Scrollbar class="scrollbar"/></Dropdown>
+        </VStack>
+      </Frame>
+
+      <!-- ② 展示反馈 -->
+      <Frame id="pageDisplay" anchor="stretch" margin="84,8,8,8" margin.portrait="52,8,8,52" raycastTarget="true">
+        <Skin/>
+        <VStack anchor="stretch" spacing="10" padding="8">
+          <Progress id="progress" class="progress" height="16" value="0.3"/>
+          <HStack height="28" spacing="8">
+            <Btn id="progMinus" class="btn" width="64" height="28" fontSize="15">-10%</Btn>
+            <Btn id="progPlus"  class="btn" width="64" height="28" fontSize="15">+10%</Btn>
+            <Frame width="0"/>
+          </HStack>
+          <!-- RawImage：纹理由 C# 生成后喂入 -->
+          <RawImage id="gradient" height="40"/>
+          <!-- Animation：点击按钮自身 pulse（VStack 内包 Animation 是文档认可的模式）
+               + 状态可视化：<Show on="state-hover"> 草莓角标（SpriteSet farm: 引用示例） -->
+          <Animation type="pulse" on="click" duration="0.3s">
+            <Btn id="pulseBtn" class="btn" width="120" height="30">
+              <Text anchor="center" fontSize="15" raycastTarget="false">点我弹跳</Text>
+              <Show on="state-hover">
+                <Image anchor="top-right" size="12x12" sprite="farm:strawberry" raycastTarget="false"/>
+              </Show>
+            </Btn>
+          </Animation>
+          <!-- Markdown：宿主未装 Markdig 时自动降级纯文本 -->
+          <Markdown id="md" height="stretch">**Markdown** 控件：支持 *斜体* / `代码` / [链接](https://example.com)</Markdown>
+        </VStack>
+      </Frame>
+
+      <!-- ③ 列表轮播 -->
+      <Frame id="pageList" anchor="stretch" margin="84,8,8,8" margin.portrait="52,8,8,52" raycastTarget="true">
+        <Skin/>
+        <VStack anchor="stretch" spacing="10" padding="8">
+          <!-- farm: SpriteSet 12 作物橱窗 -->
+          <Grid columns="6" cellSize="32x32" spacing="4" height="72">
+            <Image sprite="farm:carrot"/><Image sprite="farm:tomato"/><Image sprite="farm:wheat"/>
+            <Image sprite="farm:apple"/><Image sprite="farm:corn"/><Image sprite="farm:pumpkin"/>
+            <Image sprite="farm:strawberry"/><Image sprite="farm:eggplant"/><Image sprite="farm:sunflower"/>
+            <Image sprite="farm:grape"/><Image sprite="farm:watermelon"/><Image sprite="farm:turnip"/>
+          </Grid>
+          <Carousel id="banner" class="carousel" height="90" itemTemplate="DemoCard"
+                    interval="3" loop="true" transition="0.3" dots="bottom-center"/>
+          <ScrollList id="list" class="list" width="stretch" height="stretch" itemTemplate="OptionRow"
+                      spacing="4" padding="8" reorder="true" reorderHandle="grip">
+            <Scrollbar class="scrollbar"/>
+          </ScrollList>
+        </VStack>
+      </Frame>
+
+      <!-- ④ 模态提示 -->
+      <Frame id="pageModal" anchor="stretch" margin="84,8,8,8" margin.portrait="52,8,8,52" raycastTarget="true">
+        <Skin/>
+        <VStack anchor="stretch" spacing="10" padding="8">
+          <Btn id="msgBoxBtn"   class="btn" height="30" fontSize="15">MessageBox</Btn>
+          <Btn id="inputBoxBtn" class="btn" height="30" fontSize="15">InputBox</Btn>
+          <Btn id="mdBoxBtn"    class="btn" height="30" fontSize="15">MarkdownBox</Btn>
+          <Btn id="loadingBtn"  class="btn" height="30" fontSize="15">Loading (2s)</Btn>
+          <!-- 演示 inline 属性仍然压过属性包：class="btn" 给了 color，这里的 color= 覆盖它 -->
+          <Btn id="toastBtn"    class="btn" height="30" fontSize="15" color="accent">Toast</Btn>
+          <Btn id="exitDemoBtn" class="btn" height="30" fontSize="15">退场动画（ExitDemo）</Btn>
+        </VStack>
+      </Frame>
+
+    </SafeArea>
+  </Screen>
+
+  <!-- 退场演示：入场 = 从右侧滑入 + 淡入；reverse-on="close" 让 UI.Close 时把同一条动画倒放，
+       Screen 等它播完才销毁 —— 没写 reverse-on / on="close" 的 Screen 仍然当帧销毁。 -->
+  <Screen name="ExitDemo" reference="640x360" reference.portrait="360x640"
+          scale-mode="pixel" scale-mode.portrait="auto">
+    <Image anchor="stretch" color="#00000066" raycastTarget="true"/>
+    <SafeArea>
+      <Animation on="open" reverse-on="close" translate="48,0:0,0" fade="0:1" duration="0.25s" easing="out-cubic"
+                 anchor="center" size="300x150" size.portrait="300x200">
+        <Frame anchor="stretch" raycastTarget="true">
+          <Skin/>
+          <VStack anchor="stretch" spacing="10" padding="12">
+            <Text height="24" fontSize="16">这一页有退场动画</Text>
+            <Text height="stretch" fontSize="13">点「关闭」：UI.Close 先封输入、再把入场倒放，播完才销毁。</Text>
+            <Btn id="close" class="btn" height="30" fontSize="15">关闭</Btn>
+          </VStack>
+        </Frame>
+      </Animation>
+    </SafeArea>
+  </Screen>
+</PromptUGUI>

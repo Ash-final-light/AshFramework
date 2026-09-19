@@ -1,0 +1,297 @@
+using System;
+using System.Collections.Generic;
+using PromptUGUI.Application.Modals;
+using UnityEngine;
+
+namespace PromptUGUI.Application
+{
+    public static partial class UI
+    {
+        public static class Modal
+        {
+            private sealed class Slot
+            {
+                public readonly IModalEntry Entry;
+                public readonly Screen Screen;
+                public readonly string Key;
+                public ModalEscapeListener Escape;
+                public UnityEngine.GameObject PrevSelected;
+                public Slot(IModalEntry entry, Screen screen, string key)
+                {
+                    Entry = entry; Screen = screen; Key = key;
+                }
+            }
+
+            private static readonly List<Slot> _stack = new();           // 自底向上
+            private static readonly Queue<IModalEntry> _waiting = new();  // Queued,等栈空
+            private static readonly Queue<IModalEntry> _pending = new();  // 待实例化
+            private static bool _materializing;
+            private static IModalEntry _inFlight;
+            // 每次 teardown（CancelAllForTeardown / CloseAll）自增。MaterializePump 启动时
+            // 快照一份；快照与当前值不符即说明自己已被 teardown 抛弃，必须立刻退出、不再触碰
+            // 任何共享状态，把所有权让给 teardown 之后新起的 pump。
+            private static int _materializeEpoch;
+
+            public static int SortingOrderBase { get; set; } = 1000;
+
+            public static int QueuedCount =>
+                _stack.Count + _waiting.Count + _pending.Count + (_inFlight != null ? 1 : 0);
+
+            public static bool IsAnyOpen => _stack.Count > 0;
+
+            /// <summary>测试 / 诊断用:当前栈顶 modal 的 Screen,无则 null。</summary>
+            internal static Screen TopScreen =>
+                _stack.Count > 0 ? _stack[_stack.Count - 1].Screen : null;
+
+            public static Awaitable<TResult> OpenAsync<TResult>(
+                ModalRequest<TResult> request, ModalMode mode = ModalMode.Popup,
+                System.Threading.CancellationToken ct = default)
+            {
+                if (request == null) throw new ArgumentNullException(nameof(request));
+                var (entry, awaitable) = ModalEntry<TResult>.Create(request);
+                if (ct.CanBeCanceled)
+                    ct.Register(() => CancelEntry(entry, new OperationCanceledException(ct)));
+                if (mode == ModalMode.Queued && !IsIdle())
+                    _waiting.Enqueue(entry);
+                else
+                    QueueForMaterialize(entry);
+                return awaitable;
+            }
+
+            // 取消某个 entry,不论它在 stack / pending / inflight / waiting 哪一态。
+            // 在 stack 上 → 同 close:resolve + 销毁 Screen + 弹栈 + 提升等待队列。
+            // 其余态 → 仅 Cancel(标记 Resolved);pump 与 PromoteWaiting 出队时跳过 Resolved。
+            internal static void CancelEntry(IModalEntry entry, Exception ex)
+            {
+                for (int i = 0; i < _stack.Count; i++)
+                {
+                    if (_stack[i].Entry == entry)
+                    {
+                        var slot = _stack[i];
+                        entry.Cancel(ex);
+                        RemoveSlot(slot);
+                        RefreshTopListener();
+                        PromoteWaiting();
+                        return;
+                    }
+                }
+                entry.Cancel(ex);
+            }
+
+            // dialog 系统完全空闲:无在屏、无待实例化、无 in-flight、pump 未运行。
+            private static bool IsIdle() =>
+                _stack.Count == 0 && _pending.Count == 0 && _inFlight == null && !_materializing;
+
+            private static void QueueForMaterialize(IModalEntry entry)
+            {
+                _pending.Enqueue(entry);
+                if (!_materializing) _ = MaterializePump();
+            }
+
+            private static async Awaitable MaterializePump()
+            {
+                if (_materializing) return;
+                _materializing = true;
+                int epoch = _materializeEpoch;
+                try
+                {
+                    while (_pending.Count > 0)
+                    {
+                        // await 期间若发生过 teardown，本 pump 已被抛弃 —— 立刻退出：
+                        // 既不消费新 entry，也不在下面的 finally 里清共享状态。
+                        if (epoch != _materializeEpoch) return;
+
+                        var entry = _pending.Dequeue();
+                        if (entry.Resolved) continue;       // CloseAll 在实例化前取消
+                        _inFlight = entry;
+                        Slot slot = null;
+                        try
+                        {
+                            // 不变量:这是 pump 里唯一的 await,且必须在 _stack.Add 之前。
+                            // CloseAll / CancelAllForTeardown 取消 _inFlight 时靠这点保证
+                            // 被取消的 entry 此刻还没建出 slot/screen —— 在 _stack.Add 之后
+                            // 再加 await 会让被取消的 slot 漏在栈里、泄漏 GameObject。
+                            await ModalDocCache.EnsureLoaded(entry.XmlSrc);
+                            if (entry.Resolved) continue;   // CloseAll 在 await 期间取消
+
+                            // Capture the pre-open selection BEFORE screen.Open() runs
+                            // ApplyInitialFocus() and changes EventSystem.currentSelectedGameObject.
+                            UnityEngine.GameObject prevSelected = null;
+                            if (UI.Navigation.IsEnabled)
+                            {
+                                // EventSystem.current is null in EditMode (no game loop);
+                                // mirror the Screen.FindEventSystem / UI.Navigation fallback.
+                                var esNow = UnityEngine.EventSystems.EventSystem.current
+                                            ?? UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>();
+                                prevSelected = esNow != null ? esNow.currentSelectedGameObject : null;
+                            }
+
+                            var (screen, key) = OpenModalScreen(entry.XmlSrc);
+                            slot = new Slot(entry, screen, key);
+                            _stack.Add(slot);
+
+                            var canvas = screen.RootGameObject.GetComponent<Canvas>();
+                            canvas.overrideSorting = true;
+                            canvas.sortingOrder = SortingOrderBase + _stack.Count - 1;
+
+                            var capturedSlot = slot;
+                            var listener = screen.RootGameObject.AddComponent<ModalEscapeListener>();
+                            listener.OnEscape = () => OnEscapePressed(capturedSlot);
+                            slot.Escape = listener;
+
+                            entry.RunBind(screen, () => OnEntryClosed(capturedSlot));
+
+                            if (UI.Navigation.IsEnabled)
+                            {
+                                slot.PrevSelected = prevSelected;
+                                // Cage directional nav inside this modal — Bind has finalized which
+                                // buttons are shown, so the geometric neighbours wire up correctly.
+                                // Without this, uGUI's scene-wide search lets a modal button's
+                                // neighbour be a control on the page behind it (focus escapes, then
+                                // the trap snaps back to the first button → "stuck on OK").
+                                screen.ConfineNavigationToSelf();
+                                // Re-apply after RunBind: Bind may show/hide buttons, so the
+                                // initial focus set by screen.Open() might be on a now-hidden
+                                // control. This ensures the first *visible* focusable is selected.
+                                screen.ApplyInitialFocus();
+                                UI.Navigation.ContainmentRoot = screen.RootGameObject;  // trap 到本模态
+                            }
+
+                            RefreshTopListener();   // 激活刚压入的新栈顶,禁用原栈顶的 ESC listener
+                        }
+                        catch (Exception ex)
+                        {
+                            // The Open(...) awaitable is faulted below (entry.Cancel), but callers commonly
+                            // await fire-and-forget (or in an async void), and an unobserved Awaitable drops
+                            // its exception silently — so the modal just "never opens" with no diagnostic.
+                            // Surface it. Cancellation is normal control flow, not a failure, so skip it.
+                            if (ex is not OperationCanceledException)
+                                Debug.LogError($"[PromptUGUI] Modal '{entry.XmlSrc}' failed to open; its " +
+                                               $"Open(...) awaitable is faulted with this exception:\n{ex}");
+                            entry.Cancel(ex);
+                            if (slot != null) RemoveSlot(slot);
+                        }
+                        finally
+                        {
+                            // epoch 不符 = 已被 teardown 抛弃，_inFlight 现归新 pump，别动。
+                            if (epoch == _materializeEpoch) _inFlight = null;
+                        }
+                    }
+                }
+                finally
+                {
+                    // 只有仍持有当前 epoch 的 pump 才负责清 latch —— 被抛弃的 pump 去清会
+                    // 误伤 teardown 之后新起 pump 的状态。
+                    if (epoch == _materializeEpoch)
+                    {
+                        _materializing = false;
+                        PromoteWaiting();
+                    }
+                }
+            }
+
+            // modal 关闭(按钮 close 回调 / ESC):弹栈、销毁 Screen、提升等待队列。
+            private static void OnEntryClosed(Slot slot)
+            {
+                if (!_stack.Contains(slot)) return;       // 已被移除(如 CloseAll)
+                RemoveSlot(slot);
+                RefreshTopListener();
+                PromoteWaiting();
+            }
+
+            private static void OnEscapePressed(Slot slot)
+            {
+                // An open <TabMenu> is closer to the user than the modal it sits in, so it answers
+                // Escape first. Both listeners hear the same press and their order is undefined, so
+                // this also returns true when the menu already closed itself this frame — otherwise
+                // one press would close the menu AND the modal behind it.
+                if (Controls.TabMenu.TryConsumeEscape()) return;
+                if (Tutorial.IsBlockingInput) return;   // Block 引导期间吞 ESC(不关下层模态)
+                if (_stack.Count == 0 || _stack[_stack.Count - 1] != slot) return;
+                slot.Entry.TryEscape(() => OnEntryClosed(slot));
+            }
+
+            private static void RemoveSlot(Slot slot)
+            {
+                _stack.Remove(slot);
+                CloseModalScreen(slot.Key);               // 销毁 Screen GameObject
+
+                if (UI.Navigation.IsEnabled)
+                {
+                    UI.Navigation.ContainmentRoot = _stack.Count > 0
+                        ? _stack[_stack.Count - 1].Screen.RootGameObject : null;  // 还原到新栈顶或解除
+                    // EventSystem.current is null in EditMode; mirror Screen.FindEventSystem fallback.
+                    var es = UnityEngine.EventSystems.EventSystem.current
+                             ?? UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>();
+                    if (es != null && slot.PrevSelected != null)
+                        es.SetSelectedGameObject(slot.PrevSelected);
+                }
+            }
+
+            private static void RefreshTopListener()
+            {
+                for (int i = 0; i < _stack.Count; i++)
+                {
+                    var esc = _stack[i].Escape;
+                    if (esc != null) esc.enabled = (i == _stack.Count - 1);
+                }
+            }
+
+            // 栈彻底空了 → 从等待队列拉下一个 Queued modal 作新栈底。
+            private static void PromoteWaiting()
+            {
+                if (!IsIdle()) return;
+                while (_waiting.Count > 0)
+                {
+                    var next = _waiting.Dequeue();
+                    if (next.Resolved) continue;
+                    QueueForMaterialize(next);
+                    return;
+                }
+            }
+
+            // teardown 收尾：此刻可能还有一个 MaterializePump 挂在它唯一的 await 上。自增
+            // epoch 让那个 pump 恢复时立刻退出；清掉 latch / _inFlight，使 teardown 之后的
+            // QueueForMaterialize 能正常起一个新 pump。调用方须已清空 _pending / _waiting / _stack。
+            private static void AbandonInFlightPump()
+            {
+                _materializeEpoch++;
+                _materializing = false;
+                _inFlight = null;
+            }
+
+            public static void CloseAll()
+            {
+                var oce = new OperationCanceledException("Modal cancelled (CloseAll)");
+                for (int i = _stack.Count - 1; i >= 0; i--)
+                {
+                    _stack[i].Entry.Cancel(oce);
+                    CloseModalScreen(_stack[i].Key);
+                }
+                _stack.Clear();
+                _inFlight?.Cancel(oce);
+                while (_pending.Count > 0) _pending.Dequeue().Cancel(oce);
+                while (_waiting.Count > 0) _waiting.Dequeue().Cancel(oce);
+                AbandonInFlightPump();
+            }
+
+            // UI.UnloadAll / UI.ResetForTests 调用:取消所有 await,但不关 Screen
+            // —— modal Screen 在 UI._open 里,由 teardown 的 _open 循环统一关。
+            internal static void CancelAllForTeardown()
+            {
+                var oce = new OperationCanceledException("Modal cancelled (UI teardown)");
+                foreach (var slot in _stack) slot.Entry.Cancel(oce);
+                _stack.Clear();
+                _inFlight?.Cancel(oce);
+                while (_pending.Count > 0) _pending.Dequeue().Cancel(oce);
+                while (_waiting.Count > 0) _waiting.Dequeue().Cancel(oce);
+                AbandonInFlightPump();
+            }
+
+#if UNITY_EDITOR
+            internal static void InvalidateCacheForEditor(string src) =>
+                ModalDocCache.Invalidate(src);
+#endif
+        }
+    }
+}

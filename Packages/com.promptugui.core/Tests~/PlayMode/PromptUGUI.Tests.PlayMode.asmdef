@@ -1,0 +1,28 @@
+{
+  "name": "PromptUGUI.Tests.PlayMode",
+  "rootNamespace": "PromptUGUI.Tests",
+  "references": [
+    "PromptUGUI.Runtime",
+    "LitMotion",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner",
+    "Unity.TextMeshPro",
+    "Unity.InputSystem",
+    "Unity.InputSystem.TestFramework",
+    "Unity.Addressables",
+    "PromptUGUI.Compat.UniTask",
+    "UniTask"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll",
+    "R3.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

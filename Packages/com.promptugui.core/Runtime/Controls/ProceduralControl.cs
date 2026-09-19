@@ -1,0 +1,258 @@
+using PromptUGUI.Application;
+using PromptUGUI.Controls.Internal;
+using PromptUGUI.Parser;
+using PromptUGUI.Registry;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace PromptUGUI.Controls
+{
+    /// <summary>
+    /// A control whose primary surface can be drawn procedurally instead of by an <c>Image</c> —
+    /// the same rounded-rect SDF (fill / border / glows / glass) <c>&lt;Frame&gt;</c> draws, so a
+    /// theme can swap a control's <em>shape</em> and not just its colours.
+    ///
+    /// <para>Declaring any of the attributes below lazily attaches a <see cref="ProceduralSurface"/>;
+    /// a control that declares none is byte-for-byte what it always was, with not one extra
+    /// component. Same rule <c>Frame</c> has always had.</para>
+    ///
+    /// <para><c>color</c> is deliberately NOT here. On <c>Frame</c> it attaches the panel, because a
+    /// Frame has nothing else to colour; on an Image-backed control it is an ordinary tint and must
+    /// not drag the control into procedural mode. Each subclass keeps its own <c>color</c> and hands
+    /// the value to <see cref="Surface"/>, which routes it to whichever layer is drawing.</para>
+    /// </summary>
+    /// <remarks>
+    /// The attributes are declared once here rather than per control because
+    /// <c>ControlMeta.Build</c> reflects with <c>BindingFlags.Public | BindingFlags.Instance</c>,
+    /// which includes inherited properties — so a subclass gets all twenty for free.
+    /// </remarks>
+    public abstract class ProceduralControl : Control
+    {
+        private ProceduralSurface _surface;
+        private System.Collections.Generic.List<ProceduralSurface> _inner;
+
+        internal ProceduralSurface Surface =>
+            _surface ??= new ProceduralSurface(SurfaceHost, SurfaceSelectable);
+
+        /// <summary>
+        /// Creates and registers a surface for a layer INSIDE the control — a Slider's fill, a
+        /// Progress's frame. Registered so it takes part in the same per-pass reconcile as the
+        /// primary one; call it once per layer and cache the result.
+        ///
+        /// <para>Usually no <c>Selectable</c>: an inner layer is rarely what the control's state
+        /// colours drive. The exception is a layer that IS the control's <c>targetGraphic</c> — a
+        /// <c>&lt;Scrollbar&gt;</c>'s handle — which passes its Selectable so the target follows the
+        /// visible layer. Never glass (spec §6): an inner layer would sample the same backdrop as the
+        /// layer beneath it and come out identical.</para>
+        /// </summary>
+        private protected ProceduralSurface AddInnerSurface(GameObject host, Selectable selectable = null)
+        {
+            var surface = new ProceduralSurface(host, selectable);
+            (_inner ??= new System.Collections.Generic.List<ProceduralSurface>()).Add(surface);
+            return surface;
+        }
+
+        /// <summary>
+        /// The GameObject whose <c>Image</c> is this control's primary surface. Usually the control's
+        /// own node; for controls that keep their background on a child (<c>Toggle</c>,
+        /// <c>Slider</c>, <c>Progress</c>) it is that child, so the panel covers exactly what the
+        /// Image covered.
+        /// </summary>
+        private protected abstract GameObject SurfaceHost { get; }
+
+        /// <summary>
+        /// The control's <c>Selectable</c>, if any — its <c>targetGraphic</c> follows whichever
+        /// Graphic is visible, so <c>hoverColor</c> and friends keep working in procedural mode.
+        /// </summary>
+        private protected virtual Selectable SurfaceSelectable => null;
+
+        /// <summary>
+        /// Whether a procedural surface is currently drawing. Deliberately does NOT create one —
+        /// a subclass composing its own layer visibility with the surface must not drag every
+        /// instance into allocating a surface it never asked for.
+        /// </summary>
+        private protected bool SurfaceIsDrawing => _surface != null && _surface.IsActive;
+
+        /// <summary>The primary surface's panel if one was ever built, else null — same no-allocation rule.</summary>
+        private protected ProceduralPanel SurfacePanelOrNull => _surface?.Panel;
+
+        /// <summary>
+        /// Where <c>radius</c> goes. Every control declares it on the primary surface as it
+        /// arrives; <c>&lt;Progress&gt;</c> overrides to hold it until <c>OnAfterApply</c> — the
+        /// bar's corner is shared between its fill, its colour bg and its clip mask, and which of
+        /// them takes it depends on whether <c>fill=</c> carried a bitmap, which may be written
+        /// later in the same pass (attribute order is unspecified). Spec 2026-09-18 §5.1.
+        /// </summary>
+        private protected virtual void DeclareRadius(RadiusSpec radius)
+            => Surface.Declare(p => p.SetRadius(radius));
+
+        internal override void OnBeforeApply()
+        {
+            base.OnBeforeApply();
+            DeclaredRadius = null;
+            _surface?.BeginPass();
+            if (_inner != null)
+                for (var i = 0; i < _inner.Count; i++) _inner[i].BeginPass();
+        }
+
+        internal override void OnAfterApply()
+        {
+            base.OnAfterApply();
+            _surface?.Reconcile();
+            if (_inner != null)
+                for (var i = 0; i < _inner.Count; i++) _inner[i].Reconcile();
+        }
+
+        /// <summary>
+        /// The radius declared THIS pass, or null. Exposed for the one control that needs to compose
+        /// with it — <c>Progress</c> auto-tracks its clipping mask off it — and cleared every pass so
+        /// it answers "what is declared now", never "what was declared once".
+        /// </summary>
+        private protected RadiusSpec? DeclaredRadius { get; private set; }
+
+        /// <summary>圆角半径：单值 / <c>TL,TR,BR,BL</c>（CSS border-radius 顺序）/ <c>pill</c>。</summary>
+        [UIAttr, Preserve]
+        public string Radius
+        {
+            set
+            {
+                var v = RadiusParser.Parse(value);
+                DeclaredRadius = v;
+                DeclareRadius(v);
+            }
+        }
+
+        /// <summary>内描边宽度（px，向内绘制，不影响布局）。</summary>
+        [UIAttr, Preserve]
+        public string BorderWidth
+        {
+            set { var v = ProceduralValueParser.Pixels(value, "borderWidth"); Surface.Declare(p => p.SetBorderWidth(v)); }
+        }
+
+        /// <summary>描边色。完整渐变语法，与填充共用同一条渐变线（spec 2026-09-17 §7）。</summary>
+        [UIAttr, Preserve]
+        public string BorderColor
+        {
+            set { var v = UI.Theme.ResolveSpec(value); Surface.Declare(p => p.SetBorderColor(v)); }
+        }
+
+        /// <summary>外发光半径（px）。会把绘制四边形外扩同样的距离。</summary>
+        [UIAttr, Preserve]
+        public string Glow
+        {
+            set { var v = ProceduralValueParser.Pixels(value, "glow"); Surface.Declare(p => p.SetGlowSize(v)); }
+        }
+
+        /// <summary>发光色。完整渐变语法；不写时跟随整条填充渐变（置不透明）。</summary>
+        [UIAttr, Preserve]
+        public string GlowColor
+        {
+            set { var v = UI.Theme.ResolveSpec(value); Surface.Declare(p => p.SetGlowColor(v)); }
+        }
+
+        /// <summary>内发光宽度（px，从形状边缘向内衰减）。不改几何。</summary>
+        [UIAttr, Preserve]
+        public string InnerGlow
+        {
+            set { var v = ProceduralValueParser.Pixels(value, "innerGlow"); Surface.Declare(p => p.SetInnerGlowSize(v)); }
+        }
+
+        /// <summary>内发光色。完整渐变语法；默认白。写深色即内阴影。</summary>
+        [UIAttr, Preserve]
+        public string InnerGlowColor
+        {
+            set { var v = UI.Theme.ResolveSpec(value); Surface.Declare(p => p.SetInnerGlowColor(v)); }
+        }
+
+        /// <summary>曝光倍数（≥ 1，默认 1 = 不变）：核心发白、光晕保色相。玻璃面不作用。</summary>
+        [UIAttr, Preserve]
+        public string Intensity
+        {
+            set { var v = IntensityAttrParser.Parse(value); Surface.Declare(p => p.SetIntensity(v)); }
+        }
+
+        /// <summary>噪声雾的斑块特征尺寸（px，> 0 即开启）。压在填充之上、描边之下；玻璃面不作用。</summary>
+        [UIAttr, Preserve]
+        public string Haze
+        {
+            set { var v = ProceduralValueParser.Pixels(value, "haze"); Surface.Declare(p => p.SetHazeSize(v)); }
+        }
+
+        /// <summary>雾的颜色，完整渐变语法，同时是方向遮罩（<c>to top, A, A/0</c> = 从底边渗入）；默认白。</summary>
+        [UIAttr, Preserve]
+        public string HazeColor
+        {
+            set { var v = UI.Theme.ResolveSpec(value); Surface.Declare(p => p.SetHazeColor(v)); }
+        }
+
+        /// <summary>雾的流速（px/s，未缩放时钟），默认 0 = 静止。</summary>
+        [UIAttr, Preserve]
+        public string HazeDrift
+        {
+            set { var v = ProceduralValueParser.Pixels(value, "hazeDrift"); Surface.Declare(p => p.SetHazeDrift(v)); }
+        }
+
+        /// <summary>雾的覆盖率 0..1（默认 0.5）：0 = 稀疏几团光，1 = 整面平雾。</summary>
+        [UIAttr, Preserve]
+        public string HazeDensity
+        {
+            set { var v = HazeDensityAttrParser.Parse(value); Surface.Declare(p => p.SetHazeDensity(v)); }
+        }
+
+        /// <summary>玻璃模式：填充改为采样模糊后的 backdrop + 边缘折射 / 打光。</summary>
+        [UIAttr, Preserve]
+        public string Glass
+        {
+            set { var v = GlassAttrParser.ParseFlag(GlassAttrParser.Glass, value); Surface.Declare(p => p.SetGlass(v)); }
+        }
+
+        /// <summary>磨砂强度 0–1。</summary>
+        [UIAttr, Preserve]
+        public string Frost
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.Frost, value); Surface.Declare(p => p.SetFrost(v)); }
+        }
+
+        /// <summary>玻璃厚度（px）：边缘折射带的宽度。</summary>
+        [UIAttr, Preserve]
+        public string Depth
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.Depth, value); Surface.Declare(p => p.SetDepth(v)); }
+        }
+
+        /// <summary>色散强度 0–1。</summary>
+        [UIAttr, Preserve]
+        public string Dispersion
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.Dispersion, value); Surface.Declare(p => p.SetDispersion(v)); }
+        }
+
+        /// <summary>光源方向（度）：0 = 正上方，顺时针增。</summary>
+        [UIAttr, Preserve]
+        public string LightAngle
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.LightAngle, value); Surface.Declare(p => p.SetLightAngle(v)); }
+        }
+
+        /// <summary>边缘高光强度 0–1。</summary>
+        [UIAttr, Preserve]
+        public string LightIntensity
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.LightIntensity, value); Surface.Declare(p => p.SetLightIntensity(v)); }
+        }
+
+        /// <summary>backdrop 饱和度乘子（vibrancy）。</summary>
+        [UIAttr, Preserve]
+        public string Saturation
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.Saturation, value); Surface.Declare(p => p.SetSaturation(v)); }
+        }
+
+        /// <summary>磨砂颗粒强度 0–1。</summary>
+        [UIAttr, Preserve]
+        public string Noise
+        {
+            set { var v = GlassAttrParser.ParseValue(GlassAttrParser.Noise, value); Surface.Declare(p => p.SetNoise(v)); }
+        }
+    }
+}

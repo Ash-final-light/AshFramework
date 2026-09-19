@@ -1,0 +1,221 @@
+using NUnit.Framework;
+using PromptUGUI.Application;
+using PromptUGUI.Controls;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace PromptUGUI.Tests.EditMode.Controls
+{
+    public class BtnContentSizingTests
+    {
+        [SetUp] public void SetUp() => UI.ResetForTests();
+        [TearDown] public void TearDown() => UI.ResetForTests();
+
+        [Test]
+        public void Btn_without_text_GetNativeSize_returns_icon_only_defaults()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Btn id='b'/>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var native = btn.GetNativeSize();
+            Assert.IsTrue(native.HasValue, "Btn must report a native size (icon-only fallback)");
+            Assert.AreEqual(80f, native.Value.x);
+            Assert.AreEqual(44f, native.Value.y);
+        }
+
+        [Test]
+        public void Btn_with_text_GetNativeSize_reports_label_preferred_plus_padding()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Btn id='b'>OK</Btn>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var label = btn.GameObject.GetComponentInChildren<TMP_Text>();
+            label.ForceMeshUpdate();
+            var textW = label.preferredWidth;
+
+            var native = btn.GetNativeSize();
+            Assert.IsTrue(native.HasValue);
+            Assert.AreEqual(textW + 32f, native.Value.x, 0.5f,
+                "preferredWidth = label.preferredWidth + 16*2 padding");
+            Assert.AreEqual(44f, native.Value.y, 0.5f,
+                "preferredHeight = max(44, label.preferredHeight + 6*2)");
+        }
+
+        [Test]
+        public void Btn_in_Frame_no_size_sizeDelta_matches_native()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='f' size='400x200'>
+    <Btn id='b'>Cancel</Btn>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var native = btn.GetNativeSize().Value;
+            Assert.AreEqual(native.x, btn.RectTransform.sizeDelta.x, 0.5f,
+                "BCS-D7: free-positioning + no size + has native → sizeDelta = native");
+            Assert.AreEqual(native.y, btn.RectTransform.sizeDelta.y, 0.5f);
+            Assert.AreEqual(44f, btn.RectTransform.sizeDelta.y, 0.5f);
+        }
+
+        [Test]
+        public void Btn_in_Frame_anchor_stretch_skips_native_fallback()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='f' size='400x200'>
+    <Btn id='b' anchor='stretch' margin='8'>OK</Btn>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            Assert.AreEqual(-16f, btn.RectTransform.sizeDelta.x, 0.5f,
+                "anchor=stretch + margin=8: sizeDelta.x = -(l+r) = -16, 不被 native fallback 覆盖");
+            Assert.AreEqual(-16f, btn.RectTransform.sizeDelta.y, 0.5f);
+        }
+
+        [Test]
+        public void Btn_in_HStack_no_size_gets_LayoutElement_with_native_preferred()
+        {
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <HStack id='stack' width='400' height='44'>
+    <Btn id='b'>OK</Btn>
+  </HStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(le, "BCS-D6: Btn under LayoutGroup with no size should auto-attach LE reporting GetNativeSize");
+            var native = btn.GetNativeSize().Value;
+            Assert.AreEqual(native.x, le.preferredWidth, 0.5f);
+            Assert.AreEqual(native.y, le.preferredHeight, 0.5f);
+            Assert.AreEqual(-1f, le.flexibleWidth);
+            Assert.AreEqual(-1f, le.flexibleHeight);
+        }
+
+        [Test]
+        public void Btn_in_Frame_explicit_size_overrides_native()
+        {
+            // BCS-D5: 显式 size 优先；fallback 只在没写 size 时启用
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <Frame id='f' size='400x200'>
+    <Btn id='b' size='200x60'>OK</Btn>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            Assert.AreEqual(new Vector2(200f, 60f), btn.RectTransform.sizeDelta);
+        }
+
+        [Test]
+        public void Btn_on_hidden_tab_page_measures_same_as_active_page()
+        {
+            // Regression: a TabBar deactivates its non-selected bound pages from
+            // TabBar.OnAfterApply — which runs DURING the apply pass, before those pages'
+            // own Btn descendants are applied (TabBar precedes the pages in document order).
+            // A Btn's auto label is created via AddComponent<TMP> in EnsureLabel; on a
+            // GameObject that is already inactive, TMP's Awake/OnEnable never runs, so
+            // GetNativeSize measures a garbage (~1/10) preferredWidth that gets frozen into
+            // LayoutElement.preferredWidth → the page, once shown, has an undersized button
+            // whose text overflows. The same Btn on the SELECTED page measures correctly;
+            // the hidden-page Btn must match it.
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <TabBar id='tabs' anchor='top-stretch' height='32'>
+    <Tab id='tabA' width='84' text='A' isOn='true' bind='pageA'/>
+    <Tab id='tabB' width='84' text='B' bind='pageB'/>
+  </TabBar>
+  <Frame id='pageA' anchor='stretch' margin='32,0,0,0'>
+    <VStack anchor='stretch'><Btn id='activeBtn'>MessageBox</Btn></VStack>
+  </Frame>
+  <Frame id='pageB' anchor='stretch' margin='32,0,0,0'>
+    <VStack anchor='stretch'><Btn id='hiddenBtn'>MessageBox</Btn></VStack>
+  </Frame>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            var screen = UI.Open("S");
+
+            var activeLE = screen.Get<Btn>("activeBtn").GameObject.GetComponent<LayoutElement>();
+            var hiddenLE = screen.Get<Btn>("hiddenBtn").GameObject.GetComponent<LayoutElement>();
+            Assert.IsNotNull(activeLE);
+            Assert.IsNotNull(hiddenLE);
+            Assert.Greater(activeLE.preferredWidth, 32f,
+                "sanity: active-page Btn measures label+padding, well above the 32 padding floor");
+            Assert.AreEqual(activeLE.preferredWidth, hiddenLE.preferredWidth, 0.5f,
+                "a Btn on an initially-hidden tab page must measure the same width as the same Btn on the active page");
+        }
+
+        /// <summary>
+        /// The runtime twin of the test above, where no Open-time deferral can help: a row bound
+        /// into a list whose page is ALREADY hidden. The label TMP's Awake runs only when the page
+        /// is shown, long after GetNativeSize measured it — so the library primes every TMP it
+        /// creates with what Awake would have set (orthographic, font, TMP_Settings defaults) and
+        /// the measurement is right whether or not Awake has run.
+        /// </summary>
+        [Test]
+        public void Btn_bound_into_a_hidden_list_measures_same_as_a_visible_one()
+        {
+            UI.LoadDocument("test", "<?xml version='1.0' encoding='utf-8'?><PromptUGUI version='1'>" +
+                "<Template name='Row'><HStack height='44'><Btn id='b'>MessageBox</Btn></HStack></Template>" +
+                "<Screen name='S'>" +
+                "  <HStack id='visible' anchor='top-stretch' height='44'><Btn id='ref'>MessageBox</Btn></HStack>" +
+                "  <Frame id='page' anchor='stretch'>" +
+                "    <ScrollList id='list' anchor='center' size='300x44' itemTemplate='Row' sprite='none' color='#0000'/>" +
+                "  </Frame>" +
+                "</Screen></PromptUGUI>");
+            var screen = UI.Open("S");
+            var refLE = screen.Get<Btn>("ref").GameObject.GetComponent<LayoutElement>();
+            Assume.That(refLE.preferredWidth, Is.GreaterThan(32f), "sanity: the visible Btn measured its label");
+
+            screen.Get<Frame>("page").Hidden = true;   // off BEFORE the row exists
+            LayoutElement rowLE = null;
+            screen.Get<ScrollList>("list").BindItems(
+                R3.Observable.Return<System.Collections.Generic.IReadOnlyList<int>>(new[] { 1 }),
+                (IControl row, int _) => rowLE = row.Get<Btn>("b").GameObject.GetComponent<LayoutElement>());
+            Assert.IsNotNull(rowLE, "binding must not throw inside GetNativeSize (an un-Awake'd label used to NRE)");
+            Assert.IsFalse(rowLE.gameObject.activeInHierarchy, "precondition: built under an inactive page");
+
+            Assert.AreEqual(refLE.preferredWidth, rowLE.preferredWidth, 0.5f,
+                "a label measured before its TMP Awake used to come out ~1/10 wide");
+        }
+
+        [Test]
+        public void Btn_in_HStack_variant_text_change_updates_preferred()
+        {
+            // BCS-D9: ApplyCommon 在 Variant 切换时重跑 → GetNativeSize 重算 → LE.preferred 跟随
+            const string xml = @"<?xml version='1.0' encoding='utf-8'?>
+<PromptUGUI version='1'><Screen name='S'>
+  <HStack id='stack' width='400' height='44'>
+    <Btn id='b' text='OK' text.long='Confirm and Apply Changes'/>
+  </HStack>
+</Screen></PromptUGUI>";
+            UI.LoadDocument("test", xml);
+            UI.Variants.Set("long", false);
+            var screen = UI.Open("S");
+            var btn = screen.Get<Btn>("b");
+            var le = btn.GameObject.GetComponent<LayoutElement>();
+            var preferredShort = le.preferredWidth;
+            Assert.Greater(preferredShort, 0f, "base text='OK' preferred 应该 > 0");
+
+            UI.Variants.Set("long", true);
+            Assert.Greater(le.preferredWidth, preferredShort,
+                "long variant 文字更长 → preferredWidth 应该更大");
+        }
+    }
+}

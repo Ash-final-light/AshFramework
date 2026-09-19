@@ -1,0 +1,230 @@
+using System;
+using System.Collections.Generic;
+using PromptUGUI.Controls;
+using PromptUGUI.IR;
+using PromptUGUI.Parser;
+using PromptUGUI.Registry;
+using PromptUGUI.Variants;
+
+namespace PromptUGUI.Application
+{
+    /// <summary>
+    /// 把 ElementNode 上的属性（基础值 + Variant 覆盖）解算后应用到一个已构造好的
+    /// Control 实例上。被 ScreenInstantiator 在初次实例化与 Screen.ReSolve 共用,
+    /// 是 spec §8.1 "切换 Variant 触发已实例化 Screen 的重解算" 的核心算法承载者。
+    /// </summary>
+    internal static class ControlAttributeApplier
+    {
+        public static void Apply(ElementNode node, Control control,
+                                 ControlRegistry.Entry entry, VariantStore variants,
+                                 bool initial = true)
+        {
+            // While a setter runs, anything it logs with no node in hand (UI.ResolveSprite) is
+            // about this node. Saved / restored, not cleared: a setter can instantiate a subtree
+            // (BindItems rows) whose own Apply nests inside this one.
+            var outer = UILog.Applying;
+            UILog.Applying = node;
+            try { ApplyCore(node, control, entry, variants, initial); }
+            finally { UILog.Applying = outer; }
+        }
+
+        private static void ApplyCore(ElementNode node, Control control,
+                                      ControlRegistry.Entry entry, VariantStore variants,
+                                      bool initial)
+        {
+            // Determine tr opt-out and ctx (common attrs not registered on Meta)
+            var tr = !(node.Attributes.TryGetValue("tr", out var trVal) && trVal == "false");
+            node.Attributes.TryGetValue("ctx", out var ctx);
+
+            // 检测 caller 是否在 initial Apply 之后通过 setter 接管了 default-text attribute
+            // (e.g. MessageBoxRequest.Bind 改 TextValue)。如果接管了, ReSolve 不该把它打回
+            // XML 声明值; 但 i18n 场景 (control text 是上次 Apply 自己写的, locale 切换后
+            // Tr 结果变了) 必须重新 apply —— 区分两者靠 control 当前 text 是否 == 上次
+            // Apply 写下的 _lastAppliedDefaultText。
+            bool DefaultTextLockedByRuntime()
+            {
+                if (initial) return false;
+                if (entry.DefaultTextAttr == null) return false;
+                var current = control.PeekDefaultText();
+                return current != null && current != control._lastAppliedDefaultText;
+            }
+
+            // 运行时独占状态属性（Tab/Toggle 的 isOn 选中、Slider/Dropdown/Progress 的 value）。
+            // 与 default-text 同构的「runtime 接管即不打回」逻辑：声明值是初始值，但
+            //   - Variant 覆盖（value.low / isOn.portrait）切到对应 variant 时必须重应用 → 不能无脑跳过；
+            //   - 用户/代码运行期改过的值，ReSolve（resize / Variant / Theme）不得打回声明默认。
+            // 区分两者：control 当前值（PeekRuntimeState）是否 == 上次 Apply 写下的 _lastAppliedRuntimeState。
+            // 注意：这里存的是「应用后回读」的归一化字符串（见末尾 capture），不是 XML 字面量 ——
+            // 数值属性 "1.0" 经 float 往返会变成 "1"，直接跟字面量比会误判；回读对回读才稳。
+            bool RuntimeStateLockedByRuntime()
+            {
+                if (initial) return false;
+                if (entry.RuntimeStateAttr == null) return false;
+                var current = control.PeekRuntimeState();
+                return current != null && current != control._lastAppliedRuntimeState;
+            }
+
+            var runtimeStateReapplied = false;
+
+            // Control-specific attributes: union of base + variant keys.
+            var allKeys = new HashSet<string>(node.Attributes.Keys);
+            foreach (var k in node.VariantOverrides.Keys) allKeys.Add(k);
+            control.OnBeforeApply();
+
+            foreach (var attrName in allKeys)
+            {
+                if (IsCommonAttribute(attrName)) continue;
+                if (attrName == "tr" || attrName == "ctx") continue;
+                if (!entry.Meta.HasAttribute(attrName)) continue;
+                // 跳过 default-text attribute 的 re-apply, 当 runtime 已经通过 setter 接管。
+                if (attrName == entry.DefaultTextAttr && DefaultTextLockedByRuntime()) continue;
+                // 同理跳过 runtime-state 属性 (isOn / value)，当 runtime 已经改过它。
+                if (attrName == entry.RuntimeStateAttr && RuntimeStateLockedByRuntime()) continue;
+                var v = VariantResolver.ResolveAttribute(node, attrName, variants);
+                if (v == null) continue;
+                // Translate string-valued attrs that are commonly text-bearing.
+                // Default: only "text" attr goes through Tr (others like "color", "sprite" don't translate).
+                if (tr && attrName == "text")
+                {
+                    // Use raw value if available so we Tr the un-substituted template.
+                    var raw = (node.AttributesRaw != null &&
+                                  node.AttributesRaw.TryGetValue("text", out var r)) ? r : v;
+                    v = TrResolver.Resolve(raw, node.TextArgs, ctx);
+                }
+                ApplyOne(entry.Meta, control, node, attrName, v);
+                if (attrName == entry.DefaultTextAttr) control._lastAppliedDefaultText = v;
+                if (attrName == entry.RuntimeStateAttr) runtimeStateReapplied = true;
+            }
+
+            // Text shorthand
+            if (!string.IsNullOrEmpty(node.TextContent) && entry.DefaultTextAttr != null
+                && !DefaultTextLockedByRuntime())
+            {
+                var raw = node.TextContentRaw ?? node.TextContent;
+                var final = tr
+                    ? TrResolver.Resolve(raw, node.TextArgs, ctx)
+                    : node.TextContent;
+                final ??= "";
+                ApplyOne(entry.Meta, control, node, entry.DefaultTextAttr, final);
+                control._lastAppliedDefaultText = final;
+            }
+
+            // clamp(...) + scale on one node cannot render correctly (the ClampFitter is the last
+            // writer on that axis and would drop the box-preserving inflation), so it is a hard
+            // error here rather than a ScreenInstantiator warning. Same predicate the CLI uses —
+            // declared, not resolved — so both reject exactly the same documents.
+            foreach (var issue in PromptUGUI.Lint.ClampRules.CheckClampScale(node))
+                throw HardError(node, issue);
+
+            // A <Collapsible> with an authored height cannot render as anything: the axis is
+            // force-hugged, so the value would be silently dropped every pass. Hard error, same
+            // shape as the clamp/scale contradiction above.
+            foreach (var issue in PromptUGUI.Lint.CollapsibleRules.CheckCollapsible(node))
+                if (issue.Code == PromptUGUI.Lint.CollapsibleRules.HeightCode)
+                    throw HardError(node, issue);
+
+            // hug on a tag with no content size cannot be measured at all, and hug + scale has the
+            // same last-writer conflict as clamp + scale. Hard errors for the same reason: silently
+            // rendering a 0-sized control would be worse than refusing to open.
+            foreach (var issue in PromptUGUI.Lint.HugRules.CheckHugTag(node))
+                throw HardError(node, issue);
+            foreach (var issue in PromptUGUI.Lint.HugRules.CheckHugScale(node))
+                throw HardError(node, issue);
+
+            // reveal + scale is the same last-writer conflict; the rest of AnimationRules stays on
+            // the warning channel (a wrong child count still renders something sensible).
+            if (node.Tag == "Animation")
+                foreach (var issue in PromptUGUI.Lint.AnimationRules.CheckAnimation(node))
+                    if (issue.Code == PromptUGUI.Lint.AnimationRules.ScaleCode)
+                        throw HardError(node, issue);
+
+            // Common attributes
+            var anchor = VariantResolver.ResolveAttribute(node, "anchor", variants);
+            var size = VariantResolver.ResolveAttribute(node, "size", variants);
+            var width = VariantResolver.ResolveAttribute(node, "width", variants);
+            var height = VariantResolver.ResolveAttribute(node, "height", variants);
+            var margin = VariantResolver.ResolveAttribute(node, "margin", variants);
+            var pivot = VariantResolver.ResolveAttribute(node, "pivot", variants);
+            var hiddenStr = VariantResolver.ResolveAttribute(node, "hidden", variants);
+            var interactableStr = VariantResolver.ResolveAttribute(node, "interactable", variants);
+            var flowStr = VariantResolver.ResolveAttribute(node, "flow", variants);
+            bool? hidden = hiddenStr == null ? null : hiddenStr == "true";
+            // Undeclared interactable is written as true every pass (so a base-less
+            // interactable.mobile= still heals when the variant clears); undeclared hidden is never
+            // written — the two boundaries VariantBaseRules mirrors. Both are runtime-owned once
+            // code wrote them (spec 2026-09-17-common-attr-runtime-state-design §4.1): the same
+            // "live value differs from what the last pass wrote" test as RuntimeStateAttr, so
+            // Tab.bind / Pages / a BindItems callback / a plain `Hidden = …` all count as takeovers
+            // and a ReSolve leaves them alone. Never on the initial apply: that is the initial state.
+            bool? interactable = interactableStr != "false";
+            if (!initial)
+            {
+                if (hidden.HasValue && control._lastAppliedHidden.HasValue
+                    && control.Hidden != control._lastAppliedHidden.Value)
+                    hidden = null;
+                if (interactable.HasValue && control._lastAppliedInteractable.HasValue
+                    && control.PeekInteractable != control._lastAppliedInteractable.Value)
+                    interactable = null;
+            }
+            var flow = flowStr != "false";
+
+            try
+            {
+                control.ApplyCommon(anchor, size, width, height, margin, pivot, hidden, interactable, flow);
+                control.OnAfterApply();
+            }
+            catch (Exception ex) when (!(ex is ParseException))
+            {
+                // 不挂 InnerException：Unity 的 StackTraceUtility 会把 inner 顶到日志最前面、
+                // 把我们附带上下文的外层 message 埋到中间，作者一眼看不到关键诊断。
+                throw new ParseException(
+                    FormatNodeContext(node) + ": " + ex.Message + UILog.At(node));
+            }
+
+            // Capture the runtime-state baseline AFTER everything settles (OnAfterApply + any
+            // clamping by sibling attrs like Slider min/max), and only when we actually (re)applied
+            // it this pass — a locked/skipped attr must keep its prior baseline so the lock persists.
+            // Store the read-back (PeekRuntimeState), not the XML literal: numeric round-trips
+            // ("1.0" → 1f → "1") would otherwise read as a runtime change on the next ReSolve.
+            if (runtimeStateReapplied && entry.RuntimeStateAttr != null)
+                control._lastAppliedRuntimeState = control.PeekRuntimeState();
+            // Same rule for the two runtime-owned common attributes: baseline = read-back, and only
+            // on a pass that wrote (null here means undeclared or locked — either way, keep the old one).
+            if (hidden.HasValue) control._lastAppliedHidden = control.Hidden;
+            if (interactable.HasValue) control._lastAppliedInteractable = control.PeekInteractable;
+        }
+
+        private static void ApplyOne(ControlMeta meta, Control control,
+                                     ElementNode node, string attrName, string value)
+        {
+            try { meta.Apply(control, attrName, value); }
+            catch (Exception ex) when (!(ex is ParseException))
+            {
+                throw new ParseException(
+                    $"{FormatNodeContext(node)} attribute {attrName}=\"{value}\": {ex.Message}" +
+                    UILog.At(node));
+            }
+        }
+
+        private static string FormatNodeContext(ElementNode node)
+        {
+            var id = string.IsNullOrEmpty(node.Id) ? "" : $" id='{node.Id}'";
+            return $"<{node.Tag}{id}>";
+        }
+
+        // Same finding the CLI reports as an error — stamped with the same place, so the exception
+        // message ends in the "  at <Tag id='x'> src:line" the warning channel also prints.
+        private static ParseException HardError(ElementNode node, PromptUGUI.Lint.LintIssue issue)
+        {
+            issue = UILog.Stamp(node, issue);
+            return new ParseException($"[{issue.Code}] {issue.Message}" + UILog.At(issue));
+        }
+
+        // Single source of truth lives in PromptUGUI.IR.CommonAttributes (Core/IR) so the lint CLI can
+        // read the same set without compiling Application. 'scale' is deliberately NOT in that set: it is
+        // applied by Screen.ApplyScales (independent of the ApplyCommon path) for controls without their own
+        // setter, and dispatched through the normal [UIAttr("scale")] loop for controls that handle it
+        // themselves (e.g. <Animation>, which interprets scale="from:to" as keyframe values).
+        public static bool IsCommonAttribute(string name) => CommonAttributes.Contains(name);
+    }
+}

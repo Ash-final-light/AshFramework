@@ -9,6 +9,14 @@
 /[Mm]emoryCaptures/
 /[Rr]ecordings/
 
+# NuGetForUnity restores packages here from Assets/packages.config.
+/[Aa]ssets/[Pp]ackages/
+/[Aa]ssets/[Pp]ackages.meta
+
+# PromptUGUI's Codex-facing .NET tools create local build outputs when validated.
+/Packages/com.promptugui.core/.lint/**/[Bb]in/
+/Packages/com.promptugui.core/.lint/**/[Oo]bj/
+
 # Keep the meta files for versioned assets, but ignore generated metadata.
 /[Mm]emoryCaptures.meta
 /[Rr]ecordings.meta
@@ -62,4 +70,3 @@ crashlytics-build.properties
 .DS_Store
 Thumbs.db
 Desktop.ini
-
