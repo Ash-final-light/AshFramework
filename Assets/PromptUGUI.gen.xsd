@@ -1,0 +1,912 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:attributeGroup name="commonAttrs">
+    <xs:attribute name="id" type="xs:string" />
+    <xs:attribute name="anchor" type="xs:string" />
+    <xs:attribute name="size" type="xs:string" />
+    <xs:attribute name="width" type="xs:string" />
+    <xs:attribute name="height" type="xs:string" />
+    <xs:attribute name="margin" type="xs:string" />
+    <xs:attribute name="pivot" type="xs:string" />
+    <xs:attribute name="padding" type="xs:string" />
+    <xs:attribute name="spacing" type="xs:string" />
+    <xs:attribute name="hidden" type="xs:string" />
+    <xs:attribute name="interactable" type="xs:string" />
+    <xs:attribute name="scale" type="xs:string" />
+    <xs:attribute name="flow" type="xs:string" />
+    <xs:attribute name="stateReact" type="xs:string" />
+    <xs:attribute name="class" type="xs:string" />
+    <xs:anyAttribute processContents="lax" />
+  </xs:attributeGroup>
+  <xs:element name="PromptUGUI">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded">
+        <xs:element ref="Import" />
+        <xs:element ref="Screen" />
+        <xs:element ref="Style" />
+        <xs:element ref="Template" />
+        <xs:element ref="Theme" />
+      </xs:choice>
+      <xs:attribute name="version" use="required" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Import">
+    <xs:complexType>
+      <xs:attribute name="src" use="required" type="xs:string" />
+      <xs:attribute name="as" use="optional" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Screen">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+        <xs:element ref="Variant" />
+      </xs:choice>
+      <xs:attribute name="name" use="required" type="xs:string" />
+      <xs:attribute name="canvas" use="optional">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="overlay" />
+            <xs:enumeration value="camera" />
+            <xs:enumeration value="world" />
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:attribute name="reference" use="optional" type="xs:string" />
+      <xs:attribute name="scale-mode" use="optional">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="auto" />
+            <xs:enumeration value="pixel" />
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:anyAttribute processContents="lax" />
+    </xs:complexType>
+    <xs:unique name="screenIdUnique">
+      <xs:selector xpath=".//*" />
+      <xs:field xpath="@id" />
+    </xs:unique>
+  </xs:element>
+  <xs:element name="Style">
+    <xs:complexType>
+      <xs:attribute name="name" use="required" type="xs:string" />
+      <xs:anyAttribute processContents="lax" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Template">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Param" minOccurs="0" maxOccurs="unbounded" />
+        <xs:group ref="controlGroup" />
+      </xs:sequence>
+      <xs:attribute name="name" use="required" type="xs:string" />
+    </xs:complexType>
+    <xs:unique name="templateIdUnique">
+      <xs:selector xpath=".//*" />
+      <xs:field xpath="@id" />
+    </xs:unique>
+  </xs:element>
+  <xs:element name="Theme">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Color" minOccurs="0" maxOccurs="unbounded" />
+      </xs:sequence>
+      <xs:attribute name="name" use="required" type="xs:string" />
+      <xs:attribute name="base" use="optional" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Color">
+    <xs:complexType>
+      <xs:attribute name="name" use="required" type="xs:string" />
+      <xs:attribute name="value" use="required" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Param">
+    <xs:complexType>
+      <xs:attribute name="name" use="required" type="xs:string" />
+      <xs:attribute name="default" use="optional" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Slot">
+    <xs:complexType />
+  </xs:element>
+  <xs:element name="Header">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Variant">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Add" minOccurs="1" maxOccurs="unbounded" />
+      </xs:sequence>
+      <xs:attribute name="when" use="required" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Add">
+    <xs:complexType>
+      <xs:group ref="controlGroup" maxOccurs="unbounded" />
+      <xs:attribute name="into" use="required" type="xs:string" />
+      <xs:attribute name="at" use="optional" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Frame">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="weld" type="xs:string" />
+      <xs:attribute name="seam" type="xs:string" />
+      <xs:attribute name="raycastTarget" type="xs:boolean" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Image">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="type" type="xs:string" />
+      <xs:attribute name="rotation" type="xs:float" />
+      <xs:attribute name="flip" type="xs:string" />
+      <xs:attribute name="blur" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="raycastTarget" type="xs:boolean" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Text">
+    <xs:complexType>
+      <xs:simpleContent>
+        <xs:extension base="xs:string">
+          <xs:attributeGroup ref="commonAttrs" />
+          <xs:attribute name="align" type="xs:string" />
+          <xs:attribute name="color" type="xs:string" />
+          <xs:attribute name="fontSize" type="xs:float" />
+          <xs:attribute name="text" type="xs:string" />
+          <xs:attribute name="wrap" type="xs:string" />
+          <xs:attribute name="raycastTarget" type="xs:string" />
+        </xs:extension>
+      </xs:simpleContent>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="VStack">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="HStack">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Grid">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="columns" type="xs:int" />
+      <xs:attribute name="cellSize" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Btn">
+    <xs:complexType mixed="true">
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="pressedSprite" type="xs:string" />
+      <xs:attribute name="pressedOffset" type="xs:string" />
+      <xs:attribute name="hoverColor" type="xs:string" />
+      <xs:attribute name="pressedColor" type="xs:string" />
+      <xs:attribute name="disabledColor" type="xs:string" />
+      <xs:attribute name="hoverModulate" type="xs:string" />
+      <xs:attribute name="pressedModulate" type="xs:string" />
+      <xs:attribute name="disabledModulate" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Icon">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="name">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:pattern value="[A-Za-z0-9_\-]+:[^:]+|.*\{\{.*" />
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="rotation" type="xs:float" />
+      <xs:attribute name="flip" type="xs:string" />
+      <xs:attribute name="blur" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Animation">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="char-color" type="xs:string" />
+      <xs:attribute name="char-stagger" type="xs:string" />
+      <xs:attribute name="count" type="xs:string" />
+      <xs:attribute name="delay" type="xs:string" />
+      <xs:attribute name="duration" type="xs:string" />
+      <xs:attribute name="easing" type="xs:string" />
+      <xs:attribute name="fade" type="xs:string" />
+      <xs:attribute name="format" type="xs:string" />
+      <xs:attribute name="loop" type="xs:string" />
+      <xs:attribute name="on" type="xs:string" />
+      <xs:attribute name="reveal" type="xs:string" />
+      <xs:attribute name="reveal-from" type="xs:string" />
+      <xs:attribute name="reveal-to" type="xs:string" />
+      <xs:attribute name="reverse-on" type="xs:string" />
+      <xs:attribute name="rotate" type="xs:string" />
+      <xs:attribute name="target" type="xs:string" />
+      <xs:attribute name="translate" type="xs:string" />
+      <xs:attribute name="type" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Carousel">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="current" type="xs:int" />
+      <xs:attribute name="dotColor" type="xs:string" />
+      <xs:attribute name="dotHoverColor" type="xs:string" />
+      <xs:attribute name="dotMargin" type="xs:string" />
+      <xs:attribute name="dotPressedColor" type="xs:string" />
+      <xs:attribute name="dotSelectedColor" type="xs:string" />
+      <xs:attribute name="dotSelectedSprite" type="xs:string" />
+      <xs:attribute name="dotSize" type="xs:string" />
+      <xs:attribute name="dotSpacing" type="xs:float" />
+      <xs:attribute name="dotSprite" type="xs:string" />
+      <xs:attribute name="dotTint" type="xs:string" />
+      <xs:attribute name="dotTriSlice" type="xs:boolean" />
+      <xs:attribute name="dots" type="xs:string" />
+      <xs:attribute name="edgeAlpha" type="xs:float" />
+      <xs:attribute name="edgeScale" type="xs:float" />
+      <xs:attribute name="fill" type="xs:boolean" />
+      <xs:attribute name="interval" type="xs:float" />
+      <xs:attribute name="itemTemplate" type="xs:string" />
+      <xs:attribute name="loop" type="xs:boolean" />
+      <xs:attribute name="softness" type="xs:int" />
+      <xs:attribute name="transition" type="xs:float" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Collapsible">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="arrow" type="xs:string" />
+      <xs:attribute name="arrowColor" type="xs:string" />
+      <xs:attribute name="arrowSize" type="xs:float" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="disabledColor" type="xs:string" />
+      <xs:attribute name="disabledModulate" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="expanded" type="xs:boolean" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="fontSize" type="xs:float" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="group" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="headerColor" type="xs:string" />
+      <xs:attribute name="headerHeight" type="xs:float" />
+      <xs:attribute name="headerSprite" type="xs:string" />
+      <xs:attribute name="hoverColor" type="xs:string" />
+      <xs:attribute name="hoverModulate" type="xs:string" />
+      <xs:attribute name="icon" type="xs:string" />
+      <xs:attribute name="iconColor" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="maxHeight" type="xs:float" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="pressedColor" type="xs:string" />
+      <xs:attribute name="pressedModulate" type="xs:string" />
+      <xs:attribute name="pressedOffset" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="text" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="transition" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Decor">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="at" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="extent" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="inset" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="kind" type="xs:string" />
+      <xs:attribute name="mirror" type="xs:string" />
+      <xs:attribute name="offset" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="thickness" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Dropdown">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="arrow" type="xs:string" />
+      <xs:attribute name="arrowColor" type="xs:string" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="checkmark" type="xs:string" />
+      <xs:attribute name="checkmarkColor" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="itemColor" type="xs:string" />
+      <xs:attribute name="itemTextColor" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="popupColor" type="xs:string" />
+      <xs:attribute name="popupMask" type="xs:string" />
+      <xs:attribute name="popupSprite" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="value" type="xs:int" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="InputField">
+    <xs:complexType mixed="true">
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="align" type="xs:string" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="caretColor" type="xs:string" />
+      <xs:attribute name="caretWidth" type="xs:int" />
+      <xs:attribute name="characterLimit" type="xs:int" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="contentType" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="fontSize" type="xs:float" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="lineType" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="placeholder" type="xs:string" />
+      <xs:attribute name="placeholderColor" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="readOnly" type="xs:boolean" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="selectionColor" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="text" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Markdown">
+    <xs:complexType mixed="true">
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="bodyColor" type="xs:string" />
+      <xs:attribute name="bodyFont" type="xs:string" />
+      <xs:attribute name="boldStyle" type="xs:string" />
+      <xs:attribute name="codeFont" type="xs:string" />
+      <xs:attribute name="fontSize" type="xs:float" />
+      <xs:attribute name="linkColor" type="xs:string" />
+      <xs:attribute name="text" type="xs:string" />
+      <xs:attribute name="wrap" type="xs:boolean" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Pages">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="selected" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Progress">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="bg" type="xs:string" />
+      <xs:attribute name="bgColor" type="xs:string" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="direction" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="fill" type="xs:string" />
+      <xs:attribute name="fillColor" type="xs:string" />
+      <xs:attribute name="frame" type="xs:string" />
+      <xs:attribute name="frameColor" type="xs:string" />
+      <xs:attribute name="frameRadius" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="mask" type="xs:string" />
+      <xs:attribute name="maskRadius" type="xs:string" />
+      <xs:attribute name="mode" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="value" type="xs:float" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="RawImage">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="flip" type="xs:string" />
+      <xs:attribute name="mask" type="xs:string" />
+      <xs:attribute name="maskPadding" type="xs:string" />
+      <xs:attribute name="raycastTarget" type="xs:boolean" />
+      <xs:attribute name="rotation" type="xs:float" />
+      <xs:attribute name="showMask" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="type" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="SafeArea">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="ScrollList">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="cellSize" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="columns" type="xs:int" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="direction" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="frame" type="xs:string" />
+      <xs:attribute name="frameColor" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="itemTemplate" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="mask" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="reorder" type="xs:boolean" />
+      <xs:attribute name="reorderDuration" type="xs:string" />
+      <xs:attribute name="reorderHandle" type="xs:string" />
+      <xs:attribute name="reorderHold" type="xs:string" />
+      <xs:attribute name="reuseItems" type="xs:boolean" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Scrollbar">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="handle" type="xs:string" />
+      <xs:attribute name="handleBorderColor" type="xs:string" />
+      <xs:attribute name="handleBorderWidth" type="xs:string" />
+      <xs:attribute name="handleColor" type="xs:string" />
+      <xs:attribute name="handleGlow" type="xs:string" />
+      <xs:attribute name="handleGlowColor" type="xs:string" />
+      <xs:attribute name="handleRadius" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="overlay" type="xs:boolean" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="thickness" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Show">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="on" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Slider">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="direction" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="fill" type="xs:string" />
+      <xs:attribute name="fillColor" type="xs:string" />
+      <xs:attribute name="fillRadius" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="handle" type="xs:string" />
+      <xs:attribute name="handleColor" type="xs:string" />
+      <xs:attribute name="handleRadius" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="max" type="xs:float" />
+      <xs:attribute name="min" type="xs:float" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="value" type="xs:float" />
+      <xs:attribute name="wholeNumbers" type="xs:boolean" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Tab">
+    <xs:complexType mixed="true">
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="bind" type="xs:string" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="disabledColor" type="xs:string" />
+      <xs:attribute name="disabledModulate" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="fontSize" type="xs:float" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="hoverColor" type="xs:string" />
+      <xs:attribute name="hoverModulate" type="xs:string" />
+      <xs:attribute name="icon" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="isOn" type="xs:boolean" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="pressedColor" type="xs:string" />
+      <xs:attribute name="pressedModulate" type="xs:string" />
+      <xs:attribute name="pressedOffset" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="selectedColor" type="xs:string" />
+      <xs:attribute name="selectedModulate" type="xs:string" />
+      <xs:attribute name="selectedOffset" type="xs:string" />
+      <xs:attribute name="selectedSprite" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="text" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="TabBar">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="allowSwitchOff" type="xs:boolean" />
+      <xs:attribute name="direction" type="xs:string" />
+      <xs:attribute name="itemTemplate" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="TabMenu">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="allowSwitchOff" type="xs:boolean" />
+      <xs:attribute name="arrow" type="xs:string" />
+      <xs:attribute name="arrowColor" type="xs:string" />
+      <xs:attribute name="arrowSize" type="xs:float" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="fontSize" type="xs:float" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="gap" type="xs:float" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="iconSize" type="xs:float" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="itemTemplate" type="xs:string" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="popupGap" type="xs:float" />
+      <xs:attribute name="popupWidth" type="xs:float" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+      <xs:attribute name="transition" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Toggle">
+    <xs:complexType mixed="true">
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="borderColor" type="xs:string" />
+      <xs:attribute name="borderWidth" type="xs:string" />
+      <xs:attribute name="checkmark" type="xs:string" />
+      <xs:attribute name="checkmarkColor" type="xs:string" />
+      <xs:attribute name="color" type="xs:string" />
+      <xs:attribute name="depth" type="xs:string" />
+      <xs:attribute name="disabledColor" type="xs:string" />
+      <xs:attribute name="disabledModulate" type="xs:string" />
+      <xs:attribute name="dispersion" type="xs:string" />
+      <xs:attribute name="font" type="xs:string" />
+      <xs:attribute name="frost" type="xs:string" />
+      <xs:attribute name="glass" type="xs:string" />
+      <xs:attribute name="glow" type="xs:string" />
+      <xs:attribute name="glowColor" type="xs:string" />
+      <xs:attribute name="group" type="xs:string" />
+      <xs:attribute name="haze" type="xs:string" />
+      <xs:attribute name="hazeColor" type="xs:string" />
+      <xs:attribute name="hazeDensity" type="xs:string" />
+      <xs:attribute name="hazeDrift" type="xs:string" />
+      <xs:attribute name="hoverColor" type="xs:string" />
+      <xs:attribute name="hoverModulate" type="xs:string" />
+      <xs:attribute name="innerGlow" type="xs:string" />
+      <xs:attribute name="innerGlowColor" type="xs:string" />
+      <xs:attribute name="intensity" type="xs:string" />
+      <xs:attribute name="isOn" type="xs:boolean" />
+      <xs:attribute name="lightAngle" type="xs:string" />
+      <xs:attribute name="lightIntensity" type="xs:string" />
+      <xs:attribute name="noise" type="xs:string" />
+      <xs:attribute name="pressedColor" type="xs:string" />
+      <xs:attribute name="pressedModulate" type="xs:string" />
+      <xs:attribute name="pressedOffset" type="xs:string" />
+      <xs:attribute name="radius" type="xs:string" />
+      <xs:attribute name="saturation" type="xs:string" />
+      <xs:attribute name="selectedColor" type="xs:string" />
+      <xs:attribute name="selectedModulate" type="xs:string" />
+      <xs:attribute name="selectedOffset" type="xs:string" />
+      <xs:attribute name="sprite" type="xs:string" />
+      <xs:attribute name="text" type="xs:string" />
+      <xs:attribute name="textColor" type="xs:string" />
+      <xs:attribute name="tint" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Trigger">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+      <xs:attribute name="on" type="xs:string" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Card">
+    <xs:complexType>
+      <xs:choice maxOccurs="unbounded" minOccurs="0">
+        <xs:group ref="controlGroup" />
+      </xs:choice>
+      <xs:attributeGroup ref="commonAttrs" />
+    </xs:complexType>
+  </xs:element>
+  <xs:group name="controlGroup">
+    <xs:choice>
+      <xs:element ref="Frame" />
+      <xs:element ref="Image" />
+      <xs:element ref="Icon" />
+      <xs:element ref="Text" />
+      <xs:element ref="VStack" />
+      <xs:element ref="HStack" />
+      <xs:element ref="Grid" />
+      <xs:element ref="Btn" />
+      <xs:element ref="Slot" />
+      <xs:element ref="Header" />
+      <xs:element ref="Animation" />
+      <xs:element ref="Carousel" />
+      <xs:element ref="Collapsible" />
+      <xs:element ref="Decor" />
+      <xs:element ref="Dropdown" />
+      <xs:element ref="InputField" />
+      <xs:element ref="Markdown" />
+      <xs:element ref="Pages" />
+      <xs:element ref="Progress" />
+      <xs:element ref="RawImage" />
+      <xs:element ref="SafeArea" />
+      <xs:element ref="ScrollList" />
+      <xs:element ref="Scrollbar" />
+      <xs:element ref="Show" />
+      <xs:element ref="Slider" />
+      <xs:element ref="Tab" />
+      <xs:element ref="TabBar" />
+      <xs:element ref="TabMenu" />
+      <xs:element ref="Toggle" />
+      <xs:element ref="Trigger" />
+      <xs:element ref="Card" />
+    </xs:choice>
+  </xs:group>
+</xs:schema>

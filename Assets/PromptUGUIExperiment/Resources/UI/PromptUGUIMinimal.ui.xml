@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PromptUGUI version="1">
+  <Screen name="PromptUGUIMinimal" reference="1280x720">
+    <Frame anchor="stretch" color="#18212B" raycastTarget="true">
+      <VStack anchor="center"
+              size="420x180"
+              padding="24"
+              spacing="16"
+              childAlign="center">
+        <Text id="status"
+              width="stretch"
+              height="48"
+              align="middle-center"
+              fontSize="28"
+              color="white">PromptUGUI ready</Text>
+
+        <Btn id="verify"
+             width="240"
+             height="56"
+             radius="8"
+             color="#2E7D32"
+             hoverColor="#388E3C"
+             pressedColor="#1B5E20"
+             textColor="white">Click to verify</Btn>
+      </VStack>
+    </Frame>
+  </Screen>
+</PromptUGUI>
