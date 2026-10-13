@@ -1,0 +1,7 @@
+{
+  "name": "AshFramework.GameEvent",
+  "rootNamespace": "AshFramework.Events",
+  "references": [],
+  "autoReferenced": true,
+  "noEngineReferences": true
+}

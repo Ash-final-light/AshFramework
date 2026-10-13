@@ -1,0 +1,7 @@
+{
+  "name": "AshFramework.GameEvent.PlayModeTests",
+  "rootNamespace": "AshFramework.Events.Tests",
+  "references": ["AshFramework.GameEvent"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

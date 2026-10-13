@@ -1,0 +1,7 @@
+{
+  "name": "AshFramework.GameEvent.EditModeTests",
+  "references": ["AshFramework.GameEvent", "AshFramework.GameEvent.Editor"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../../../../Library/EventBridgeTool/obj/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

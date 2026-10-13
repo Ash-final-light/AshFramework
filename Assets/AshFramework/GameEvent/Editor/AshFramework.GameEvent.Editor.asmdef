@@ -1,0 +1,7 @@
+{
+  "name": "AshFramework.GameEvent.Editor",
+  "rootNamespace": "AshFramework.Events.Editor",
+  "references": ["AshFramework.GameEvent"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}
