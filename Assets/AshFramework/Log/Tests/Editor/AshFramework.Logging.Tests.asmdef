@@ -1,0 +1,8 @@
+{
+  "name": "AshFramework.Logging.Tests",
+  "rootNamespace": "AshFramework.Logging.Tests",
+  "references": ["AshFramework.Logging", "AshFramework.Logging.Editor"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

@@ -1,0 +1,7 @@
+{
+  "name": "AshFramework.Logging.Editor",
+  "rootNamespace": "AshFramework.Logging.Editor",
+  "references": ["AshFramework.Logging"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

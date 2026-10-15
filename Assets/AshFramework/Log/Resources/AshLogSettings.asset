@@ -1,0 +1,34 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f006375ad2046f143bc9f278ed46cb62, type: 3}
+  m_Name: AshLogSettings
+  m_EditorClassIdentifier: 
+  EnableInPlayer: 1
+  Config:
+    Enabled: 1
+    MinLevel: 0
+    DisplayPrefix: 
+    ShowTime: 1
+    ShowThreadId: 1
+    ShowFrameCount: 0
+    EnableConsole: 1
+    ConsoleMinLevel: 0
+    EnableColor: 1
+    EnableFile: 0
+    FileMinLevel: 1
+    FileDirectory: 
+    MaxFileSizeMB: 10
+    MaxRetainedFiles: 10
+    FlushIntervalMs: 1000
+    QueueCapacity: 4096
+    MaxEntryLength: 16384
+  CustomCategories: []

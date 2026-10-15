@@ -1,0 +1,6 @@
+{
+  "name": "AshFramework.Logging",
+  "rootNamespace": "AshFramework.Logging",
+  "references": [],
+  "autoReferenced": true
+}
