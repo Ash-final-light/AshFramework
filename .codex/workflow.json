@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "solution": null,
+  "unity_cli": null,
+  "task_profiles": {
+    "docs": "docs",
+    "tooling": "docs",
+    "csharp": "code",
+    "editor": "unity",
+    "scene": "unity",
+    "prefab": "unity",
+    "integration": "full"
+  }
+}

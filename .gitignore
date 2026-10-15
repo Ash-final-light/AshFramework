@@ -65,3 +65,11 @@ Desktop.ini
 
 HybridCLRData/hybridclr_repo/
 HybridCLRData/il2cpp_plus_repo/
+
+# Project-local workflow evidence and Python caches
+/.codex/runs/
+__pycache__/
+*.py[cod]
+!/.codex/tools/CSharpLayoutCheck/CSharpLayoutCheck.csproj
+/.codex/tools/**/bin/
+/.codex/tools/**/obj/
