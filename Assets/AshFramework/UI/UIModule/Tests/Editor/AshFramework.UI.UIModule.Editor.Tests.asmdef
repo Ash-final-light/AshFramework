@@ -1,0 +1,8 @@
+{
+    "name": "AshFramework.UI.UIModule.Editor.Tests",
+    "rootNamespace": "AshFramework.UI.UIModule.Tests",
+    "references": ["AshFramework.UI.UIModule", "AshFramework.UI.UIModule.Editor", "AshFramework.UI.UIModule.TestSupport", "UnityEngine.UI"],
+    "includePlatforms": ["Editor"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

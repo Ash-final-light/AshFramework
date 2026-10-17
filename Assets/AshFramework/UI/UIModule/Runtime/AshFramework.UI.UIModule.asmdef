@@ -1,0 +1,6 @@
+{
+    "name": "AshFramework.UI.UIModule",
+    "rootNamespace": "AshFramework.UI.UIModule",
+    "references": ["UnityEngine.UI"],
+    "autoReferenced": true
+}

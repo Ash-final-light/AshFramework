@@ -1,0 +1,7 @@
+{
+    "name": "AshFramework.UI.UIModule.Editor",
+    "rootNamespace": "AshFramework.UI.UIModule.Editor",
+    "references": ["AshFramework.UI.UIModule", "UnityEngine.UI"],
+    "includePlatforms": ["Editor"],
+    "autoReferenced": true
+}

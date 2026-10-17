@@ -1,0 +1,7 @@
+{
+    "name": "AshFramework.UI.UIModule.TestSupport",
+    "rootNamespace": "AshFramework.UI.UIModule.Tests",
+    "references": ["AshFramework.UI.UIModule"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}
