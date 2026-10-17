@@ -1,0 +1,7 @@
+{
+    "name": "AshFramework.UI.UIModule.Examples.PlayModeTests",
+    "rootNamespace": "AshFramework.UI.UIModule.Examples.Tests",
+    "references": ["AshFramework.UI.UIModule", "AshFramework.UI.UIModule.Examples", "UnityEngine.UI", "Unity.TextMeshPro"],
+    "optionalUnityReferences": ["TestAssemblies"],
+    "autoReferenced": false
+}

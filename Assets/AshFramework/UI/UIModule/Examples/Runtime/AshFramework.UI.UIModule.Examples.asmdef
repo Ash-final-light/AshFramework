@@ -1,0 +1,6 @@
+{
+    "name": "AshFramework.UI.UIModule.Examples",
+    "rootNamespace": "AshFramework.UI.UIModule.Examples.StackDemo",
+    "references": ["AshFramework.UI.UIModule", "UnityEngine.UI", "Unity.TextMeshPro"],
+    "autoReferenced": false
+}

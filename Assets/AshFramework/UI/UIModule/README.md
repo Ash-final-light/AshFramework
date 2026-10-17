@@ -2,6 +2,8 @@
 
 uGUI 窗口的按需加载、参数绑定、分层显示、隐藏复用与关闭释放。Unity 2022.3，标准 Task，无额外异步或资源包依赖。
 
+可直接运行的最小层内栈示例见 [Examples/README.md](Examples/README.md)：包含 A/B 两个窗口、标准生成文件、Resources Prefab、场景、实时生命周期计数与 PlayMode 集成测试。
+
 ## 已确认的代码存放规则
 
 框架：`Assets/AshFramework/UI/UIModule/`，命名空间 `AshFramework.UI.UIModule`。

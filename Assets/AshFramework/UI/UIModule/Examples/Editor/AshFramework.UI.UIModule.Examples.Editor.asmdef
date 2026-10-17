@@ -1,0 +1,7 @@
+{
+    "name": "AshFramework.UI.UIModule.Examples.Editor",
+    "rootNamespace": "AshFramework.UI.UIModule.Examples.Editor",
+    "references": ["AshFramework.UI.UIModule", "AshFramework.UI.UIModule.Editor", "AshFramework.UI.UIModule.Examples", "UnityEngine.UI", "Unity.TextMeshPro"],
+    "includePlatforms": ["Editor"],
+    "autoReferenced": false
+}
