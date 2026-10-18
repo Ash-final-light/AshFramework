@@ -1,0 +1,15 @@
+{
+    "name": "AshACT.Attributes.EditModeTests",
+    "rootNamespace": "AshACT.Attributes.Tests",
+    "references": [
+        "AshACT.Attributes",
+        "AshFramework.FixedPoint"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "autoReferenced": false
+}

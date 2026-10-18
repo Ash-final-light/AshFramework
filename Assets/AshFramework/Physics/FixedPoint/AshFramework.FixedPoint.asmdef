@@ -1,0 +1,7 @@
+{
+    "name": "AshFramework.FixedPoint",
+    "rootNamespace": "Framework.FixedPoint",
+    "references": [],
+    "autoReferenced": true,
+    "noEngineReferences": true
+}

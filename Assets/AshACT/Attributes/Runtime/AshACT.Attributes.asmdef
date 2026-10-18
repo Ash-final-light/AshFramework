@@ -1,0 +1,9 @@
+{
+    "name": "AshACT.Attributes",
+    "rootNamespace": "AshACT.Attributes",
+    "references": [
+        "AshFramework.FixedPoint"
+    ],
+    "autoReferenced": true,
+    "noEngineReferences": true
+}
