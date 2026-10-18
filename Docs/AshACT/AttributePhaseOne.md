@@ -80,4 +80,4 @@ python .codex/scripts/workflow.py --project D:/UnityProject/AshFramework verify 
 python .codex/scripts/workflow.py --project D:/UnityProject/AshFramework verify --task editor --test-filter AshACT.Attributes.Tests
 ```
 
-尚未实现完整效果定义/实例、周期和帧调度、标记、动态表达式、跨角色依赖、生命周期冻结快照、事件发布、完整状态保存恢复或可视化编辑器。重复执行测试只验证本模块在当前 Windows Editor 环境下的 Raw 和序号结果，不代表完整帧同步、网络回滚或跨平台确定性验收。
+第一阶段交付时尚未实现效果运行时；后续已在[第二阶段](AttributePhaseTwo.md)实现只读效果定义/实例、周期、帧调度与标记。动态表达式、跨角色依赖、生命周期冻结快照、事件发布、完整状态保存恢复和可视化编辑器仍未实现。重复执行测试只验证本模块在当前 Windows Editor 环境下的 Raw 和序号结果，不代表完整帧同步、网络回滚或跨平台确定性验收。

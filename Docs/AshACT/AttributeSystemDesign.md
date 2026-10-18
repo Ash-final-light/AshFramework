@@ -2,6 +2,8 @@
 
 状态：已确认的设计方案；尚未实现运行时 C#、可视化编辑器或 Unity 资源。本文中的类型名称和接口职责均为拟新增设计，不代表仓库已有 API。
 
+实施进度：上面的状态与下文“当前主工作区”描述保留最初方案确认时的基线；现在属性基础与效果运行时已分别实施，实际 API、程序集和验证边界以[第一阶段](AttributePhaseOne.md)及[第二阶段](AttributePhaseTwo.md)为准。本文跨角色依赖、生命周期快照等内容仍是后续设计，不代表已交付能力。
+
 ## 1. 依据、范围与前置条件
 
 - 本地 [GAS 中文参考](../../Assets/AshACT/Refs/GASDocumentation_Chinese-main/README.md) 的 4.3–4.5 节提供 Attribute、BaseValue/CurrentValue、GameplayEffect、Modifier 和效果实例等概念。参考目录只有 README 和图片，没有可复用的 Unreal C++ 实现。

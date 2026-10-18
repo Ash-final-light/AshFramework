@@ -1,0 +1,10 @@
+{
+    "name": "AshACT.Effects",
+    "rootNamespace": "AshACT.Effects",
+    "references": [
+        "AshACT.Attributes",
+        "AshFramework.FixedPoint"
+    ],
+    "autoReferenced": true,
+    "noEngineReferences": true
+}
