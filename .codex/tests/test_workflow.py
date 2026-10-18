@@ -132,6 +132,81 @@ class ProjectCase(unittest.TestCase):
         solution.write_text('Project("guid") = "Example", "Example.csproj", "id"', encoding="utf-8")
         self.assertIn(source, checks.solution_inputs(self.context, solution)["sources"])
 
+    def test_editor_verification_accepts_reference_pipeline_envelopes(self):
+        run, calls = self.verify_reference_pipeline([self.reference_test()])
+        self.assertEqual(run.finish(), 0)
+        self.assertEqual([step["status"] for step in run.data["steps"]], ["passed"] * 3)
+        listings = [args for args in calls if args[0] == "command" and "--timeout" not in args]
+        self.assertTrue(listings)
+        for args in listings:
+            self.assertNotIn("--detail", args)
+            self.assertNotIn("--limit", args)
+        discovery = next(args for args in calls if "list_tests" in args)
+        self.assertNotIn("--mode", discovery)
+        start = next(args for args in calls if "run_tests" in args)
+        self.assertEqual(start[start.index("--filter") + 1], "Example.Tests")
+        for args in calls:
+            self.assertEqual(args[args.index("--project-path") + 1], str(self.project))
+
+    def test_reference_pipeline_zero_tests_blocks_without_starting_tests(self):
+        run, calls = self.verify_reference_pipeline([])
+        self.assertEqual(run.finish(), 2)
+        self.assertEqual([step["status"] for step in run.data["steps"]], ["passed", "passed", "blocked"])
+        self.assertFalse(any("run_tests" in args for args in calls))
+
+    def test_unsupported_test_arguments_block_without_accepting_retained_results(self):
+        run, calls = self.verify_reference_pipeline([self.reference_test()], reject_start=True)
+        self.assertEqual(run.finish(), 2)
+        self.assertIn("命令参数", run.data["steps"][-1]["message"])
+        self.assertEqual(sum("run_tests" in args for args in calls), 1)
+        self.assertEqual(sum("test_status" in args for args in calls), 1)
+
+    @staticmethod
+    def reference_test():
+        return {"FullName": "Example.Tests.One", "Mode": "EditMode", "Explicit": False}
+
+    def verify_reference_pipeline(self, tests, reject_start=False):
+        run = Run(self.context, "verify --task editor --test-filter Example.Tests")
+        calls = []
+
+        def execute(arguments, timeout=45):
+            arguments = arguments[1:]
+            calls.append(arguments)
+            command = "status"
+            if arguments[0] == "status":
+                data = {"instances": [{"project": str(self.project), "state": "ready"}]}
+            elif "--timeout" not in arguments:
+                command = "command"
+                data = {"commands": [{"name": name} for name in
+                        ("recompile", "recompile_status", "list_tests", "run_tests", "test_status")]}
+            else:
+                command = arguments[arguments.index("--timeout") + 2]
+                if command == "run_tests" and reject_start:
+                    value = {"success": False, "errors": [{"code": "COMMAND_FAILED", "message":
+                             "This Editor's Unity Pipeline package is too old to parse command lines. "
+                             "Update it to 0.6.0-exp.1 or newer with unity pipeline upgrade."}]}
+                    return subprocess.CompletedProcess(arguments, 1, json.dumps(value), "")
+                results = {
+                    "recompile": {"status": "up_to_date"},
+                    "recompile_status": json.dumps({"status": "up_to_date", "failed": False, "errors": []}),
+                    "list_tests": {"Tests": tests, "Count": len(tests), "success": True, "command": "list_tests",
+                                   "result": None, "executionTimeMs": None},
+                    "run_tests": {"success": True, "command": "run_tests", "result": "running",
+                                  "executionTimeMs": None, "Summary": {}, "StatusPath": "Temp/test-status.json"},
+                    "test_status": json.dumps({"status": "completed",
+                                               "summary": {"total": 1, "passed": 1, "failed": 0,
+                                                           "skipped": 0, "inconclusive": 0},
+                                               "results": [{"FullName": "Example.Tests.One", "Status": "Passed"}]}),
+                }
+                data = {"command": command, "parameters": {}, "result": results[command],
+                        "target": {"projectPath": str(self.project)}}
+            value = {"success": True, "command": command, "data": data}
+            return subprocess.CompletedProcess(arguments, 0, json.dumps(value), "")
+
+        with patch.object(self.context, "tool", return_value="fake-cli"), patch.object(run, "execute", side_effect=execute):
+            checks.verify(run, "unity", [], None, "Example.Tests", "testName", ["editor"], 1)
+        return run, calls
+
 
 class ContractTests(unittest.TestCase):
     def test_task_profiles_are_explicit(self):
@@ -148,6 +223,35 @@ class ContractTests(unittest.TestCase):
     def test_business_test_acknowledgement_is_preserved(self):
         value = {"success": True, "command": "run_tests", "result": "running"}
         self.assertEqual(unwrap(value), value)
+
+    def test_actual_cli_command_envelope_and_json_status_are_unwrapped(self):
+        result = {"status": "up_to_date", "failed": False, "errors": []}
+        value = {"success": True, "command": "command recompile_status", "data": {
+            "command": "recompile_status", "parameters": {}, "result": json.dumps(result),
+            "target": {"projectPath": str(Path.cwd())}}}
+        self.assertEqual(unwrap(value), result)
+
+    def test_reference_test_listing_and_acknowledgement_keep_business_fields(self):
+        for payload in (
+            {"Tests": [], "Count": 0, "success": True, "command": "list_tests",
+             "result": None, "executionTimeMs": None},
+            {"Summary": {}, "Results": [], "StatusPath": "Temp/status.json", "success": True,
+             "command": "run_tests", "result": "running", "executionTimeMs": None},
+        ):
+            value = {"success": True, "data": {"command": payload["command"], "parameters": {}, "result": payload}}
+            self.assertEqual(unwrap(value), payload)
+
+    def test_nested_business_failure_is_not_hidden_by_cli_success(self):
+        value = {"success": True, "data": {"command": "editor_status", "parameters": {},
+                 "result": {"success": True, "Success": False, "Error": "business failed"}}}
+        with self.assertRaises(WorkflowError) as error:
+            unwrap(value)
+        self.assertEqual(error.exception.status, "failed")
+
+    def test_other_cli_failures_are_not_classified_as_version_blockers(self):
+        with self.assertRaises(WorkflowError) as error:
+            unwrap({"success": False, "errors": [{"message": "invalid command parameter"}]})
+        self.assertEqual(error.exception.status, "failed")
 
     def test_cli_failure_is_not_inferred_as_success_from_data(self):
         with self.assertRaises(WorkflowError):
@@ -187,6 +291,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(command_names({"commands": [{"name": "editor_status"}]}), {"editor_status"})
         with self.assertRaises(WorkflowError):
             command_names({"unrecognized": True})
+        with self.assertRaises(WorkflowError):
+            command_names({"commands": [{"description": "no name"}]})
 
     def test_zero_test_discovery_is_blocked(self):
         with self.assertRaises(WorkflowError):

@@ -28,14 +28,19 @@ def unwrap(text):
                 return value
         if not isinstance(value, dict):
             return value
-        if value.get("success", value.get("Success")) is False:
+        if value.get("success") is False or value.get("Success") is False:
             codes = str(value.get("errors", value.get("Error", "")))
             if any(word in codes for word in ("NO_INSTANCES", "UNREACHABLE", "CONNECTION", "AMBIGUOUS")):
                 blocked("目标项目没有可用的 Pipeline 连接；详见命令证据。")
+            if "too old to parse command lines" in codes:
+                blocked("当前 CLI 不支持向此 Pipeline 版本传递命令参数；操作未被执行。请核对 CLI/包版本兼容性，详见命令证据。")
             raise WorkflowError("CLI/Pipeline 报告失败；详见命令证据。")
         if "data" in value and ("success" in value or "command" in value):
             value = value["data"]
-        elif "result" in value and (value.get("command") in ("command", "cmd") or "executionTimeMs" in value):
+        elif ("result" in value
+              and (value.get("command") in ("command", "cmd") or "parameters" in value
+                   or "target" in value or "executionTimeMs" in value)
+              and not any(key in value for key in ("summary", "Summary", "tests", "Tests", "statusPath", "StatusPath"))):
             value = value["result"]
         else:
             return value
@@ -71,7 +76,10 @@ def command_names(data):
     if not isinstance(data, list):
         blocked("无法识别命令发现结果，不能确认 Pipeline 能力。")
     names = {item.get("name", item.get("command")) for item in data if isinstance(item, dict)}
-    return {name for name in names if isinstance(name, str)}
+    names = {name for name in names if isinstance(name, str) and name.strip()}
+    if not names:
+        blocked("命令发现结果没有可识别的命令名，不能确认 Pipeline 能力。")
+    return names
 
 
 def selected_tests(data, mode, query, filter_type):
@@ -142,7 +150,8 @@ class Unity:
 
     def discover(self):
         self.target()
-        data = self.raw(["command", "--project-path", str(self.context.project), "--detail", "full", "--limit", "10000"])
+        # Match the reference workflow: explicit listing flags require a newer Pipeline protocol.
+        data = self.raw(["command", "--project-path", str(self.context.project)])
         self.capabilities = command_names(data)
         return sorted(self.capabilities)
 
@@ -197,7 +206,9 @@ class Unity:
     def tests(self, mode, query, filter_type, timeout):
         if not query.strip():
             blocked("必须指定相关测试筛选器，不能默认运行所有第三方测试。")
-        expected = selected_tests(self.call("list_tests", {"mode": mode}), mode, query, filter_type)
+        # The default listing contains both modes. Filter locally so discovery also works
+        # with Pipeline versions that the CLI cannot pass command-line arguments to.
+        expected = selected_tests(self.call("list_tests"), mode, query, filter_type)
         before = self.call("test_status")
         if isinstance(before, dict) and before.get("status") == "running":
             blocked("目标项目已有测试运行，未启动新的测试。")

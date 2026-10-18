@@ -191,7 +191,7 @@ def verify(run, profile, includes, solution_override, test_filter, filter_type, 
             connected = run.step("editor-target-and-capabilities", unity.discover)
             compiled = connected and run.step("editor-compilation", lambda: unity.recompile(timeout))
             if not connected:
-                run.skip("editor-compilation", "目标项目未连接，未启动编译。")
+                run.skip("editor-compilation", "目标校验或命令发现未通过，未启动编译。")
             for mode in modes:
                 if not compiled:
                     run.skip(mode + "-tests", "目标连接或 Editor 编译未通过，未启动测试。")

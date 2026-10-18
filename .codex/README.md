@@ -39,6 +39,8 @@ python .codex/scripts/workflow.py unity query list_open_scenes
 
 没有 Pipeline 时不会安装或升级工具、关闭 Editor、换项目，或自动启用另一个验证后端。可以使用已有批处理验证结果作补充证据，但不能把它冒充为 live Pipeline 检查。
 
+命令发现采用 TEngine 参考工作流的无列表选项调用：`unity command --project-path <绝对项目路径> --format json`，不要求 Pipeline 支持 `--detail`、`--limit`。解析器拆开 CLI 外层、命令结果层和 JSON 字符串状态，同时保留测试清单、统计及异步启动确认等业务字段；外层 CLI 成功不能覆盖内层业务失败。
+
 ## 按任务选择验证
 
 | 任务 | Profile | 检查范围 |
@@ -65,6 +67,7 @@ python .codex/scripts/workflow.py verify --profile full --include Assets/MyModul
 - 测试筛选器必须明确，默认按测试名；可选 `--filter-type assembly/category`。
 - Editor 验证默认 EditMode；需要 PlayMode 时显式增加 `--test-mode playmode`。
 - 测试先发现再运行，检查本次启动确认、终态、数量、逐项结果及标识；零测试、全部跳过、保留旧结果均不通过。
+- 测试发现使用无参数 `list_tests`，再在本地按模式、筛选器和 Explicit 标记选择用例。若 CLI 报告 `too old to parse command lines`，说明它不能向当前 Pipeline 传递启动测试所需的参数，该步骤记录为 blocked，不重发、不去掉测试筛选器重试，也不自动升级包。零匹配时在发现阶段直接 blocked，不启动测试。
 - 标准 Pipeline 命令协议需要目标包实际提供；不匹配时明确 blocked/failed，不猜测调用参数。
 - `docs` 只验证工作流自身结构和语法，不等于完整业务文档、全部链接或 C# 检查。
 - scene/prefab 任务的机器测试不代替视觉验收；本工作流不提供资源修改功能。
