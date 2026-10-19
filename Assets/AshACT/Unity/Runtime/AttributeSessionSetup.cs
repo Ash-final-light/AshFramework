@@ -1,0 +1,13 @@
+using System;
+
+namespace AshACT.Unity
+{
+    /// <summary>由运行方临时组装的一次模拟输入，不作为 Unity 资产保存。</summary>
+    public sealed class AttributeSessionSetup
+    {
+        public AttributeCatalogAsset Catalog;
+        public EffectGraphAsset[] Effects = Array.Empty<EffectGraphAsset>();
+        public MarkerConfiguration[] Markers = Array.Empty<MarkerConfiguration>();
+        public EntityConfiguration[] Entities = Array.Empty<EntityConfiguration>();
+    }
+}

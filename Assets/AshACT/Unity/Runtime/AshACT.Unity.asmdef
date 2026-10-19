@@ -1,0 +1,6 @@
+{
+    "name": "AshACT.Unity",
+    "rootNamespace": "AshACT.Unity",
+    "references": ["AshACT.Attributes", "AshACT.Effects", "AshFramework.FixedPoint"],
+    "autoReferenced": true
+}

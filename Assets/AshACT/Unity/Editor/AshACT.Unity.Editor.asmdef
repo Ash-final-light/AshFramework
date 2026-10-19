@@ -1,0 +1,7 @@
+{
+    "name": "AshACT.Unity.Editor",
+    "rootNamespace": "AshACT.Unity.Editor",
+    "references": ["AshACT.Unity", "AshACT.Attributes", "AshACT.Effects", "AshFramework.FixedPoint"],
+    "includePlatforms": ["Editor"],
+    "autoReferenced": true
+}
