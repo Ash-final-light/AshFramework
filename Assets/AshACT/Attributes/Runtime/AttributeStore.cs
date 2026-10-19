@@ -8,7 +8,7 @@ namespace AshACT.Attributes
     /// 单个角色的固定属性集合；在模拟线程上按确定性的命令顺序调用。
     /// 事务中不触发回调，只有全部命令成功后才原子替换内部状态。
     /// </summary>
-    public sealed class AttributeStore
+    public sealed partial class AttributeStore
     {
         private sealed class Entry
         {
@@ -143,6 +143,11 @@ namespace AshACT.Attributes
         /// </summary>
         public AttributeResult TryExecute(IReadOnlyList<AttributeCommand> commands)
         {
+            if (m_ManagedWrites)
+            {
+                return new AttributeResult(AttributeError.StoreOwnedByRuntime);
+            }
+
             if (commands == null)
             {
                 return new AttributeResult(AttributeError.InvalidConfiguration);

@@ -22,7 +22,13 @@ namespace AshACT.Effects
         FrameOverflow,
         IdExhausted,
         MissingInstance,
-        Faulted
+        Faulted,
+        MissingSource,
+        DependencyCycle,
+        EntityInactive,
+        InvalidState,
+        ConfigurationMismatch,
+        ModifierOwnedByEffect
     }
 
     /// <summary>包含目标、实例、配置项和底层属性事务错误的只读结果。</summary>

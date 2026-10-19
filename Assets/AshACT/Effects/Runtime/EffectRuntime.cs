@@ -16,7 +16,7 @@ namespace AshACT.Effects
     /// 单模拟域的串行入口。帧开始移除到期项，调用方提交输入后再于帧结束触发周期。
     /// 系统步骤失败后锁定运行时，保留已提交的较早事务供诊断，不能重试半帧。
     /// </summary>
-    public sealed class EffectRuntime
+    public sealed partial class EffectRuntime
     {
         private readonly SortedDictionary<EntityId, EffectController> m_Controllers =
             new SortedDictionary<EntityId, EffectController>();
@@ -59,6 +59,11 @@ namespace AshACT.Effects
                 }
             }
 
+            if (!attributes.TryClaim(this))
+            {
+                return new EffectResult(EffectError.StoreAlreadyRegistered, entityId);
+            }
+
             controller = new EffectController(entityId, attributes);
             m_Controllers.Add(entityId, controller);
             return new EffectResult(EffectError.None, entityId);
@@ -84,6 +89,11 @@ namespace AshACT.Effects
             if (frame < 0 || LastCompletedFrame == long.MaxValue || frame != LastCompletedFrame + 1)
             {
                 return new EffectResult(EffectError.InvalidFrame);
+            }
+
+            foreach (EffectController controller in m_Controllers.Values)
+            {
+                controller.Attributes.SetManagedWrites(true);
             }
 
             CurrentFrame = frame;
@@ -118,16 +128,11 @@ namespace AshACT.Effects
                     continue;
                 }
 
-                EffectController controller = m_Controllers[effect.TargetId];
-                AttributeResult transaction = controller.Attributes.TryExecute(effect.Commands);
+                EffectResult transaction = Atomic(candidate => candidate.Tick(effect.Id, effect.TargetId));
                 if (!transaction.Succeeded)
                 {
-                    return Stop(AttributeFailure(effect.TargetId, effect.Id, transaction));
+                    return Stop(transaction);
                 }
-
-                controller.Commit(new ActiveEffect(effect.Id, effect.Spec, effect.TargetId,
-                    effect.StartFrame, effect.EndFrame,
-                    NextPeriod(CurrentFrame, effect.Spec.Definition.PeriodFrames, effect.EndFrame), effect.Commands));
             }
 
             LastCompletedFrame = CurrentFrame;
@@ -143,97 +148,14 @@ namespace AshACT.Effects
                 return writable;
             }
 
-            if (spec == null)
+            EffectResult result = Atomic(candidate => candidate.Apply(targetId, spec));
+            if (!result.Succeeded && result.InstanceId.Value > LastInstanceId)
             {
-                return new EffectResult(EffectError.InvalidSpec, targetId);
+                return new EffectResult(result.Error, result.TargetId, modifierIndex: result.ModifierIndex,
+                    parameterId: result.ParameterId, attributeResult: result.AttributeResult, attributeId: result.AttributeId);
             }
 
-            if (!m_Controllers.TryGetValue(targetId, out EffectController controller))
-            {
-                return new EffectResult(EffectError.MissingTarget, targetId);
-            }
-
-            if (LastInstanceId == ulong.MaxValue)
-            {
-                return new EffectResult(EffectError.IdExhausted, targetId);
-            }
-
-            EffectDefinition definition = spec.Definition;
-            long? end = null;
-            if (definition.DurationKind == EffectDurationKind.Finite)
-            {
-                if (CurrentFrame > long.MaxValue - definition.DurationFrames)
-                {
-                    return new EffectResult(EffectError.FrameOverflow, targetId);
-                }
-
-                end = CurrentFrame + definition.DurationFrames;
-            }
-
-            EffectInstanceId instanceId = new EffectInstanceId(LastInstanceId + 1);
-            bool persistent = definition.DurationKind != EffectDurationKind.Instant && definition.PeriodFrames == 0;
-            AttributeCommand[] commands = new AttributeCommand[definition.Modifiers.Count];
-            ulong handle = LastModifierHandle;
-            for (int i = 0; i < commands.Length; i++)
-            {
-                EffectModifier modifier = definition.Modifiers[i];
-                FP64 operand = modifier.Value.Constant;
-                if (modifier.Value.Kind == EffectValueKind.SetByCaller &&
-                    !spec.Parameters.TryGetValue(modifier.Value.ParameterId, out operand))
-                {
-                    return new EffectResult(EffectError.MissingParameter, targetId, modifierIndex: i,
-                        parameterId: modifier.Value.ParameterId);
-                }
-
-                if (EffectDefinition.ValidateOperand(modifier.Operation, operand) != EffectError.None)
-                {
-                    return new EffectResult(EffectError.InvalidParameter, targetId, modifierIndex: i,
-                        parameterId: modifier.Value.ParameterId);
-                }
-
-                if (!controller.Attributes.TryGetValue(modifier.AttributeId, out _))
-                {
-                    return new EffectResult(EffectError.MissingAttribute, targetId, modifierIndex: i,
-                        attributeId: modifier.AttributeId);
-                }
-
-                if (persistent)
-                {
-                    do
-                    {
-                        if (handle == ulong.MaxValue)
-                        {
-                            return new EffectResult(EffectError.IdExhausted, targetId, modifierIndex: i);
-                        }
-
-                        handle++;
-                    }
-                    while (controller.Attributes.HasModifier(handle));
-                }
-
-                commands[i] = new AttributeCommand(persistent ? AttributeCommandKind.AddPersistent : AttributeCommandKind.Instant,
-                    modifier.AttributeId, modifier.Operation, operand, persistent ? handle : 0, modifier.Priority);
-            }
-
-            // 周期效果在施加时只验证，不执行伤害或治疗；第一次触发严格晚于开始帧。
-            if (persistent || definition.DurationKind == EffectDurationKind.Instant)
-            {
-                AttributeResult transaction = controller.Attributes.TryExecute(commands);
-                if (!transaction.Succeeded)
-                {
-                    return AttributeFailure(targetId, default, transaction);
-                }
-            }
-
-            if (definition.DurationKind != EffectDurationKind.Instant)
-            {
-                controller.Commit(new ActiveEffect(instanceId, spec, targetId, CurrentFrame, end,
-                    NextPeriod(CurrentFrame, definition.PeriodFrames, end), commands));
-            }
-
-            LastInstanceId = instanceId.Value;
-            LastModifierHandle = handle;
-            return new EffectResult(EffectError.None, targetId, instanceId);
+            return result;
         }
 
         /// <summary>去重并按实体编号升序执行，每个目标独立提交；结果顺序与执行顺序一致。</summary>
@@ -279,27 +201,12 @@ namespace AshACT.Effects
                 return new EffectResult(EffectError.MissingInstance, targetId, instanceId);
             }
 
-            return Remove(effect);
+            return Atomic(candidate => candidate.RemoveCore(effect));
         }
 
         private EffectResult Remove(ActiveEffect effect)
         {
-            EffectController controller = m_Controllers[effect.TargetId];
-            AttributeCommand[] commands = new AttributeCommand[effect.ModifierHandles.Count];
-            for (int i = 0; i < commands.Length; i++)
-            {
-                commands[i] = new AttributeCommand(AttributeCommandKind.RemovePersistent,
-                    effect.Commands[i].AttributeId, modifierHandle: effect.ModifierHandles[i]);
-            }
-
-            AttributeResult transaction = controller.Attributes.TryExecute(commands);
-            if (!transaction.Succeeded)
-            {
-                return AttributeFailure(effect.TargetId, effect.Id, transaction);
-            }
-
-            controller.Forget(effect.Id);
-            return new EffectResult(EffectError.None, effect.TargetId, effect.Id);
+            return Atomic(candidate => candidate.RemoveCore(effect));
         }
 
         private List<ActiveEffect> OrderedEffects()

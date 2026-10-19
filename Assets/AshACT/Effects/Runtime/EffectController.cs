@@ -12,6 +12,8 @@ namespace AshACT.Effects
 
         public EntityId EntityId { get; }
         public AttributeStore Attributes { get; }
+        public bool IsActive { get; internal set; } = true;
+        public ulong Lifecycle { get; internal set; } = 1;
         public int ActiveCount => m_Active.Count;
 
         internal EffectController(EntityId entityId, AttributeStore attributes)
@@ -47,6 +49,18 @@ namespace AshACT.Effects
             }
 
             return count;
+        }
+
+        internal void CopyFrom(EffectController candidate)
+        {
+            Attributes.CommitFrom(candidate.Attributes);
+            IsActive = candidate.IsActive;
+            Lifecycle = candidate.Lifecycle;
+            m_Active.Clear();
+            foreach (ActiveEffect effect in candidate.m_Active.Values)
+            {
+                m_Active.Add(effect.Id, effect);
+            }
         }
 
         internal void Commit(ActiveEffect effect)

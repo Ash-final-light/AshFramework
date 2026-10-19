@@ -14,7 +14,8 @@ namespace AshACT.Attributes
         InvalidModifierHandle,
         DuplicateModifier,
         MissingModifier,
-        ResourceModifierNotAllowed
+        ResourceModifierNotAllowed,
+        StoreOwnedByRuntime
     }
 
     /// <summary>确定性的执行结果；初始化失败时 CommandIndex 为 -1。</summary>

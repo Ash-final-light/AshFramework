@@ -15,10 +15,14 @@ namespace AshACT.Effects
         public long? NextPeriodFrame { get; }
         public IReadOnlyList<ulong> ModifierHandles { get; }
 
+        public SourceSnapshot FrozenSource { get; }
+        public ulong SourceLifecycle { get; }
+        public bool IsSourceFrozen => FrozenSource != null;
+
         internal AttributeCommand[] Commands { get; }
 
         internal ActiveEffect(EffectInstanceId id, EffectSpec spec, EntityId targetId,
-            long startFrame, long? endFrame, long? nextPeriodFrame, AttributeCommand[] commands)
+            long startFrame, long? endFrame, long? nextPeriodFrame, AttributeCommand[] commands, ulong sourceLifecycle = 0, SourceSnapshot frozenSource = null)
         {
             Id = id;
             Spec = spec;
@@ -26,7 +30,9 @@ namespace AshACT.Effects
             StartFrame = startFrame;
             EndFrame = endFrame;
             NextPeriodFrame = nextPeriodFrame;
-            Commands = commands;
+            Commands = (AttributeCommand[])commands.Clone();
+            SourceLifecycle = sourceLifecycle;
+            FrozenSource = frozenSource;
             ulong[] handles = spec.Definition.PeriodFrames == 0 ? new ulong[commands.Length] : Array.Empty<ulong>();
             for (int i = 0; i < handles.Length; i++)
             {

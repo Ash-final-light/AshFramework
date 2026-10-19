@@ -23,21 +23,6 @@ namespace AshACT.Effects
         Arithmetic
     }
 
-    /// <summary>首版仅解释常量与必填参数；其余节点在定义验证时明确拒绝。</summary>
-    public readonly struct EffectValue
-    {
-        public EffectValueKind Kind { get; }
-        public FP64 Constant { get; }
-        public uint ParameterId { get; }
-
-        public EffectValue(EffectValueKind kind, FP64 constant = default, uint parameterId = 0)
-        {
-            Kind = kind;
-            Constant = constant;
-            ParameterId = parameterId;
-        }
-    }
-
     public readonly struct EffectModifier
     {
         public AttributeId AttributeId { get; }
@@ -105,9 +90,10 @@ namespace AshACT.Effects
             for (int i = 0; i < modifierCopy.Length; i++)
             {
                 EffectModifier modifier = modifiers[i];
-                if (modifier.Value.Kind != EffectValueKind.Constant && modifier.Value.Kind != EffectValueKind.SetByCaller)
+                EffectError valueError = modifier.Value.Validate();
+                if (valueError != EffectError.None)
                 {
-                    return new EffectResult(EffectError.UnsupportedValueSource, modifierIndex: i);
+                    return new EffectResult(valueError, modifierIndex: i);
                 }
 
                 if (!modifier.AttributeId.IsValid || modifier.Operation < AttributeOperation.Add ||
