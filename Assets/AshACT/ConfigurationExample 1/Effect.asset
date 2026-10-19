@@ -1,0 +1,57 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 640784e2ec4ec9048b37b7d3beda4de1, type: 3}
+  m_Name: Effect
+  m_EditorClassIdentifier: 
+  SchemaVersion: 3
+  ReleaseVersion: 1
+  EffectDefinitionId: 1001
+  DurationKind: 1
+  DurationFrames: 120
+  PeriodFrames: 0
+  MarkerCatalog: {fileID: 0}
+  MarkerOperations: []
+  RequiredParameters: 07000000
+  Nodes:
+  - NodeId: 1
+    Kind: 3
+    Constant: 0.0000
+    ParameterId: 0
+    AttributeId: 101
+    Arithmetic: 0
+    LeftNodeId: 0
+    RightNodeId: 0
+    Position: {x: 35, y: 40}
+  - NodeId: 2
+    Kind: 1
+    Constant: 0.0000
+    ParameterId: 7
+    AttributeId: 0
+    Arithmetic: 0
+    LeftNodeId: 0
+    RightNodeId: 0
+    Position: {x: 35, y: 205}
+  - NodeId: 3
+    Kind: 6
+    Constant: 0.0000
+    ParameterId: 0
+    AttributeId: 0
+    Arithmetic: 2
+    LeftNodeId: 1
+    RightNodeId: 2
+    Position: {x: 350, y: 100}
+  Modifiers:
+  - AttributeId: 101
+    Operation: 0
+    Priority: 0
+    ValueNodeId: 3
+    Position: {x: 0, y: 0}

@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0c5af049e167346419595025d84b9602, type: 3}
   m_Name: Catalog
   m_EditorClassIdentifier: 
-  SchemaVersion: 2
+  SchemaVersion: 3
   ReleaseVersion: 1
   Attributes:
   - {fileID: 11400000, guid: fd4c6c222bff62d45abcbe43c325169a, type: 2}

@@ -44,7 +44,6 @@ namespace AshACT.Unity.Tests
             m_Effect.EffectDefinitionId = 1001;
             m_Effect.DurationKind = EffectDurationKind.Finite;
             m_Effect.DurationFrames = 3;
-            m_Effect.MarkerIds = new uint[] { 1 };
             m_Effect.Nodes = new[] { new EffectValueNode { NodeId = 1, Constant = "1.5000" } };
             m_Effect.Modifiers = new[]
             {
@@ -55,7 +54,6 @@ namespace AshACT.Unity.Tests
             m_Setup = new AttributeSessionSetup();
             m_Setup.Catalog = m_Catalog;
             m_Setup.Effects = new[] { m_Effect };
-            m_Setup.Markers = new[] { new MarkerConfiguration { MarkerId = 1 } };
             m_Setup.Entities = new[]
             {
                 new EntityConfiguration { EntityId = 1, Profile = m_Profile },
@@ -104,6 +102,17 @@ namespace AshACT.Unity.Tests
             Assert.That(DecimalValue.Format(FP64.FromRaw(raw)), Is.EqualTo(expected));
         }
 
+        [TestCase(1)]
+        [TestCase(2)]
+        public void PreviousSchemaEffectsAreRejectedInsteadOfSilentlyDroppingTheirPayload(int schema)
+        {
+            m_Effect.SchemaVersion = schema;
+            Assert.That(ConfigurationCompiler.TryCompileSession(m_Setup, out CompiledSessionConfiguration compiled,
+                out IReadOnlyList<ConfigurationIssue> issues), Is.False);
+            Assert.That(compiled, Is.Null);
+            Assert.That(issues.Any(issue => issue.Code == "VersionMismatch"), Is.True);
+        }
+
         [TestCase("attribute-zero", "InvalidId")]
         [TestCase("attribute-duplicate", "InvalidId")]
         [TestCase("profile-zero", "InvalidId")]
@@ -111,7 +120,6 @@ namespace AshACT.Unity.Tests
         [TestCase("effect-duplicate", "InvalidId")]
         [TestCase("entity-zero", "InvalidId")]
         [TestCase("entity-duplicate", "InvalidId")]
-        [TestCase("marker-duplicate", "InvalidId")]
         [TestCase("schema", "VersionMismatch")]
         [TestCase("release", "VersionMismatch")]
         [TestCase("node-duplicate", "InvalidNodeId")]
@@ -124,7 +132,6 @@ namespace AshACT.Unity.Tests
         [TestCase("read", "MissingAttribute")]
         [TestCase("parameter", "MissingParameter")]
         [TestCase("resource", "ResourcePersistent")]
-        [TestCase("marker", "MissingMarker")]
         [TestCase("limit", "CollectionLimit")]
         [TestCase("null-list", "CollectionLimit")]
         public void InvalidSessionNeverPublishesPartialConfiguration(string mutation, string code)
@@ -155,11 +162,8 @@ namespace AshACT.Unity.Tests
                 case "entity-duplicate":
                     m_Setup.Entities[1].EntityId = 1;
                     break;
-                case "marker-duplicate":
-                    m_Setup.Markers = new[] { m_Setup.Markers[0], m_Setup.Markers[0] };
-                    break;
                 case "schema":
-                    m_Effect.SchemaVersion = 3;
+                    m_Effect.SchemaVersion = VersionedConfigurationAsset.CurrentSchemaVersion + 1;
                     break;
                 case "release":
                     m_Profile.ReleaseVersion = 2;
@@ -195,9 +199,6 @@ namespace AshACT.Unity.Tests
                     break;
                 case "resource":
                     m_Effect.Modifiers[0].AttributeId = 102;
-                    break;
-                case "marker":
-                    m_Effect.MarkerIds = new uint[] { 2 };
                     break;
                 case "limit":
                     m_Effect.Nodes = new EffectValueNode[ConfigurationCompiler.MaximumNodes + 1];
@@ -242,7 +243,7 @@ namespace AshACT.Unity.Tests
                 out issues), Is.True, string.Join("\n", issues));
             Assert.That(effect.Definition.Id.Value, Is.EqualTo(1001));
             Assert.That(ConfigurationCompiler.TryCompileSession(m_Catalog, m_Setup.Entities, m_Setup.Effects,
-                m_Setup.Markers, out CompiledSessionConfiguration compiled, out issues), Is.True, string.Join("\n", issues));
+                out CompiledSessionConfiguration compiled, out issues), Is.True, string.Join("\n", issues));
             Assert.That(compiled.Entities.Count, Is.EqualTo(2));
             Assert.That(typeof(EffectGraphAsset).GetField("SourceProfile"), Is.Null);
             Assert.That(typeof(EffectGraphAsset).GetField("TargetProfile"), Is.Null);
@@ -524,6 +525,130 @@ namespace AshACT.Unity.Tests
             }
         }
 
+        [Test]
+        public void SessionForwardsSubscriptionsAndRestoreResetWithoutSyntheticChanges()
+        {
+            AttributeSession session = new AttributeSession(Compile());
+            EffectRuntimeState saved = session.Runtime.CaptureState();
+            List<AttributeChange> changes = new List<AttributeChange>();
+            int resets = 0;
+            using (session.Subscribe(2, 101, changes.Add))
+            {
+                using (session.SubscribeStateReset(reset => resets++))
+                {
+                    Assert.That(session.BeginFrame(0).Succeeded, Is.True);
+                    Assert.That(session.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out string error), Is.True, error);
+                    Assert.That(changes.Single().Cause.Reason, Is.EqualTo(AttributeChangeReason.EffectApplied));
+                    Assert.That(session.Runtime.TryRestoreState(saved, Array.Empty<EffectDefinition>()).Succeeded, Is.True);
+                    Assert.That(changes.Count, Is.EqualTo(1));
+                    Assert.That(resets, Is.EqualTo(1));
+                }
+            }
+
+            Assert.That(session.BeginFrame(0).Succeeded, Is.True);
+            Assert.That(session.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out _), Is.True);
+            Assert.That(changes.Count, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void HostSessionChangedSupportsExplicitUnsubscribeAndRebindOnlyAfterSuccess()
+        {
+            GameObject gameObject = new GameObject("属性会话订阅测试");
+            IDisposable token = null;
+            try
+            {
+                AttributeRuntimeHost host = gameObject.AddComponent<AttributeRuntimeHost>();
+                List<AttributeSession> previousSessions = new List<AttributeSession>();
+                List<AttributeChange> changes = new List<AttributeChange>();
+                host.SessionChanged += (previous, current) =>
+                {
+                    Assert.That(host.Session, Is.SameAs(current));
+                    previousSessions.Add(previous);
+                    token?.Dispose();
+                    token = current.Subscribe(2, 101, changes.Add);
+                };
+                Assert.That(host.TryInitialize(m_Setup, out _), Is.True);
+                AttributeSession first = host.Session;
+                Assert.That(previousSessions.Single(), Is.Null);
+                Assert.That(first.BeginFrame(0).Succeeded, Is.True);
+                Assert.That(first.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out _), Is.True);
+                Assert.That(host.TryInitialize(null, out _), Is.False);
+                Assert.That(previousSessions.Count, Is.EqualTo(1));
+                Assert.That(host.Session, Is.SameAs(first));
+                Assert.That(host.TryInitialize(m_Setup, out _), Is.True);
+                Assert.That(previousSessions[1], Is.SameAs(first));
+                Assert.That(first.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out _), Is.True);
+                Assert.That(changes.Count, Is.EqualTo(1));
+                Assert.That(host.Session.BeginFrame(0).Succeeded, Is.True);
+                Assert.That(host.Session.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out _), Is.True);
+                Assert.That(changes.Count, Is.EqualTo(2));
+            }
+            finally
+            {
+                token?.Dispose();
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void HostRejectsInitializationDuringAttributeAndSessionChangeCallbacks()
+        {
+            GameObject gameObject = new GameObject("属性通知重入测试");
+            try
+            {
+                AttributeRuntimeHost host = gameObject.AddComponent<AttributeRuntimeHost>();
+                List<string> rejections = new List<string>();
+                host.SessionChanged += (previous, current) =>
+                {
+                    Assert.That(host.TryInitialize(m_Setup, out IReadOnlyList<ConfigurationIssue> issues), Is.False);
+                    rejections.Add(issues.Single().Code);
+                };
+                Assert.That(host.TryInitialize(m_Setup, out _), Is.True);
+                AttributeSession first = host.Session;
+                using (first.Subscribe(2, 101, change =>
+                {
+                    Assert.That(host.TryInitialize(m_Setup, out IReadOnlyList<ConfigurationIssue> issues), Is.False);
+                    rejections.Add(issues.Single().Code);
+                }))
+                {
+                    Assert.That(first.BeginFrame(0).Succeeded, Is.True);
+                    Assert.That(first.TryApply(1001, 1, 2, Array.Empty<EffectParameter>(), out _), Is.True);
+                }
+
+                Assert.That(host.Session, Is.SameAs(first));
+                Assert.That(rejections, Is.EqualTo(new[] { "NotificationReentrancy", "NotificationReentrancy" }));
+                Assert.That(first.Runtime.LastNotificationException, Is.Null);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void HostSessionChangedExceptionsDoNotInvalidateInitializationOrSkipOtherListeners()
+        {
+            GameObject gameObject = new GameObject("属性会话异常测试");
+            try
+            {
+                AttributeRuntimeHost host = gameObject.AddComponent<AttributeRuntimeHost>();
+                int delivered = 0;
+                host.SessionChanged += (previous, current) =>
+                {
+                    throw new InvalidOperationException("会话回调异常");
+                };
+                host.SessionChanged += (previous, current) => delivered++;
+                LogAssert.Expect(LogType.Exception, "InvalidOperationException: 会话回调异常");
+                Assert.That(host.TryInitialize(m_Setup, out _), Is.True);
+                Assert.That(host.Session, Is.Not.Null);
+                Assert.That(delivered, Is.EqualTo(1));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
         private static IEnumerator WaitForGraph(EffectGraphWindow window, EffectGraphAsset asset, int afterBuild)
         {
             double deadline = EditorApplication.timeSinceStartup + 3;
@@ -645,7 +770,6 @@ namespace AshACT.Unity.Tests
                 Assert.That(setup, Is.Not.SameAs(m_Setup));
                 Assert.That(setup.Catalog, Is.SameAs(m_Catalog));
                 Assert.That(setup.Effects.Single(), Is.SameAs(m_Effect));
-                Assert.That(setup.Markers.Single().MarkerId, Is.EqualTo(1));
                 Assert.That(setup.Entities[0].Profile, Is.SameAs(m_Profile));
                 Assert.That(setup.Entities[1].Profile, Is.SameAs(other));
                 Assert.That(window.InitializePreview(setup), Is.True);
@@ -676,8 +800,7 @@ namespace AshACT.Unity.Tests
                 {
                     Catalog = m_Catalog,
                     Entities = m_Setup.Entities,
-                    Effects = m_Setup.Effects,
-                    Markers = m_Setup.Markers
+                    Effects = m_Setup.Effects
                 };
                 Assert.That(host.TryInitialize(invalid, out issues), Is.False);
                 Assert.That(host.Session, Is.SameAs(session));
@@ -805,6 +928,7 @@ namespace AshACT.Unity.Tests
 
                 Assert.That(AssetDatabase.FindAssets("", new[] { folder }).Length, Is.EqualTo(5));
                 Assert.That(AssetDatabase.LoadMainAssetAtPath(folder + "/SessionSetup.asset"), Is.Null);
+                Assert.That(System.IO.File.ReadAllText(folder + "/Effect.asset"), Does.Not.Contain("\n  MarkerIds:"));
                 Assert.That(setup.Entities[1].EntityId, Is.EqualTo(2));
                 graph = EffectGraphWindow.Open(setup.Effects[0]);
                 graph.AddNode(EffectValueKind.Constant);

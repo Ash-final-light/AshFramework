@@ -11,7 +11,6 @@ namespace AshACT.Effects.Tests
         [Test]
         public void DefinitionSpecAndPublicViewsDefensivelyCopyTheirInputs()
         {
-            MarkerId[] markers = { new MarkerId(1) };
             EffectModifier[] modifiers =
             {
                 new EffectModifier(new AttributeId(1), AttributeOperation.Add,
@@ -19,15 +18,13 @@ namespace AshACT.Effects.Tests
             };
             EffectParameter[] parameters = { new EffectParameter(7, FP64.FromInt(10)) };
             Assert.That(EffectDefinition.TryCreate(new EffectDefinitionId(1), EffectDurationKind.Infinite,
-                0, 0, markers, modifiers, out EffectDefinition definition).Succeeded, Is.True);
+                0, 0, modifiers, out EffectDefinition definition).Succeeded, Is.True);
             Assert.That(EffectSpec.TryCreate(definition, new EntityId(1), parameters, out EffectSpec spec).Succeeded, Is.True);
-            markers[0] = new MarkerId(2);
             modifiers[0] = default;
             parameters[0] = new EffectParameter(7, FP64.FromInt(99));
-            Assert.That(definition.Markers[0], Is.EqualTo(new MarkerId(1)));
             Assert.That(definition.Modifiers[0].Value.ParameterId, Is.EqualTo(7));
             Assert.That(spec.Parameters[7].Raw, Is.EqualTo(FP64.FromInt(10).Raw));
-            Assert.Throws<NotSupportedException>(() => ((IList<MarkerId>)definition.Markers)[0] = new MarkerId(3));
+            Assert.Throws<NotSupportedException>(() => ((IList<EffectModifier>)definition.Modifiers)[0] = default);
             Assert.Throws<NotSupportedException>(() => ((IDictionary<uint, FP64>)spec.Parameters)[7] = FP64.Zero);
         }
 
@@ -40,8 +37,7 @@ namespace AshACT.Effects.Tests
         [TestCase((EffectDurationKind)99, 0, 0)]
         public void InvalidTimeConfigurationReturnsStructuredFailure(EffectDurationKind kind, long duration, long period)
         {
-            EffectResult result = EffectDefinition.TryCreate(new EffectDefinitionId(1), kind, duration, period,
-                Array.Empty<MarkerId>(), Array.Empty<EffectModifier>(), out EffectDefinition definition);
+            EffectResult result = EffectDefinition.TryCreate(new EffectDefinitionId(1), kind, duration, period, Array.Empty<EffectModifier>(), out EffectDefinition definition);
             Assert.That(result.Error, Is.EqualTo(EffectError.InvalidDefinition));
             Assert.That(definition, Is.Null);
         }
@@ -54,8 +50,7 @@ namespace AshACT.Effects.Tests
         [TestCase((EffectValueKind)99)]
         public void UnsupportedNodesAreExplicitlyRejected(EffectValueKind kind)
         {
-            EffectResult result = EffectDefinition.TryCreate(new EffectDefinitionId(1), EffectDurationKind.Infinite, 0, 0,
-                Array.Empty<MarkerId>(), new[]
+            EffectResult result = EffectDefinition.TryCreate(new EffectDefinitionId(1), EffectDurationKind.Infinite, 0, 0, new[]
                 {
                     new EffectModifier(new AttributeId(1), AttributeOperation.Add, new EffectValue(kind))
                 }, out EffectDefinition definition);
@@ -65,23 +60,17 @@ namespace AshACT.Effects.Tests
         }
 
         [Test]
-        public void InvalidIdsDuplicateMarkersAndNullListsDoNotProduceDefinitions()
+        public void InvalidIdsAndNullModifiersDoNotProduceDefinitions()
         {
-            Assert.That(Create(default, Array.Empty<MarkerId>(), Array.Empty<EffectModifier>()).Error,
+            Assert.That(Create(default, Array.Empty<EffectModifier>()).Error,
                 Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), null, Array.Empty<EffectModifier>()).Error,
+            Assert.That(Create(new EffectDefinitionId(1), null).Error,
                 Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), Array.Empty<MarkerId>(), null).Error,
-                Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), new[] { new MarkerId(0) }, Array.Empty<EffectModifier>()).Error,
-                Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), new[] { new MarkerId(1), new MarkerId(1) }, Array.Empty<EffectModifier>()).Error,
-                Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), Array.Empty<MarkerId>(), new[]
+            Assert.That(Create(new EffectDefinitionId(1), new[]
             {
                 new EffectModifier(new AttributeId(1), AttributeOperation.Add, new EffectValue(EffectValueKind.SetByCaller))
             }).Error, Is.EqualTo(EffectError.InvalidDefinition));
-            Assert.That(Create(new EffectDefinitionId(1), Array.Empty<MarkerId>(), new[]
+            Assert.That(Create(new EffectDefinitionId(1), new[]
             {
                 new EffectModifier(default, AttributeOperation.Add, new EffectValue(EffectValueKind.Constant))
             }).Error, Is.EqualTo(EffectError.InvalidDefinition));
@@ -93,7 +82,7 @@ namespace AshACT.Effects.Tests
         [TestCase((AttributeOperation)99, 1)]
         public void InvalidConstantOperationOrOperandIsRejected(AttributeOperation operation, int value)
         {
-            EffectResult result = Create(new EffectDefinitionId(1), Array.Empty<MarkerId>(), new[]
+            EffectResult result = Create(new EffectDefinitionId(1), new[]
             {
                 new EffectModifier(new AttributeId(1), operation,
                     new EffectValue(EffectValueKind.Constant, FP64.FromInt(value)))
@@ -105,8 +94,7 @@ namespace AshACT.Effects.Tests
         [Test]
         public void SpecRejectsInvalidDuplicateOrOutOfRangeParameters()
         {
-            Assert.That(EffectDefinition.TryCreate(new EffectDefinitionId(1), EffectDurationKind.Infinite, 0, 0,
-                Array.Empty<MarkerId>(), Array.Empty<EffectModifier>(), out EffectDefinition definition).Succeeded, Is.True);
+            Assert.That(EffectDefinition.TryCreate(new EffectDefinitionId(1), EffectDurationKind.Infinite, 0, 0, Array.Empty<EffectModifier>(), out EffectDefinition definition).Succeeded, Is.True);
             Assert.That(EffectSpec.TryCreate(null, new EntityId(1), Array.Empty<EffectParameter>(), out _).Error,
                 Is.EqualTo(EffectError.InvalidSpec));
             Assert.That(EffectSpec.TryCreate(definition, default, Array.Empty<EffectParameter>(), out _).Error,
@@ -126,10 +114,9 @@ namespace AshACT.Effects.Tests
             Assert.That(duplicate.ParameterId, Is.EqualTo(1));
         }
 
-        private static EffectResult Create(EffectDefinitionId id, MarkerId[] markers, EffectModifier[] modifiers)
+        private static EffectResult Create(EffectDefinitionId id, EffectModifier[] modifiers)
         {
-            EffectResult result = EffectDefinition.TryCreate(id, EffectDurationKind.Infinite, 0, 0,
-                markers, modifiers, out EffectDefinition definition);
+            EffectResult result = EffectDefinition.TryCreate(id, EffectDurationKind.Infinite, 0, 0, modifiers, out EffectDefinition definition);
             Assert.That(definition, Is.Null);
             return result;
         }

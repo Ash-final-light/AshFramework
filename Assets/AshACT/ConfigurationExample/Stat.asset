@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cf15227b25ec22d419eb9813ec12b2dc, type: 3}
   m_Name: Stat
   m_EditorClassIdentifier: 
-  SchemaVersion: 2
+  SchemaVersion: 3
   ReleaseVersion: 1
   AttributeId: 101
   DisplayName: "\u793A\u4F8B\u6570\u503C"

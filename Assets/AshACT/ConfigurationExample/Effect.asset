@@ -12,13 +12,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 640784e2ec4ec9048b37b7d3beda4de1, type: 3}
   m_Name: Effect
   m_EditorClassIdentifier: 
-  SchemaVersion: 2
+  SchemaVersion: 3
   ReleaseVersion: 1
   EffectDefinitionId: 1001
   DurationKind: 1
   DurationFrames: 120
   PeriodFrames: 0
-  MarkerIds: 01000000
+  MarkerCatalog: {fileID: 0}
+  MarkerOperations: []
   RequiredParameters: 07000000
   Nodes:
   - NodeId: 1
@@ -38,7 +39,7 @@ MonoBehaviour:
     Arithmetic: 0
     LeftNodeId: 0
     RightNodeId: 0
-    Position: {x: 35.333332, y: 192.66666}
+    Position: {x: 35, y: 192}
   - NodeId: 3
     Kind: 6
     Constant: 0.0000

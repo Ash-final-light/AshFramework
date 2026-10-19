@@ -47,13 +47,6 @@ namespace AshACT.Unity.Editor
                     lines.Add($"  实例 {effect.Id} / 定义 {effect.Spec.Definition.Id} / 来源 {effect.Spec.SourceId} " +
                         $"{(effect.IsSourceFrozen ? "Frozen" : "Live")} / 生命周期 {effect.SourceLifecycle}");
                     lines.Add($"  开始 {effect.StartFrame} / 到期 {effect.EndFrame?.ToString() ?? "∞"} / 下次周期 {effect.NextPeriodFrame?.ToString() ?? "无"} / 间隔 {effect.Spec.Definition.PeriodFrames}");
-                    List<string> markers = new List<string>();
-                    foreach (MarkerId marker in effect.Spec.Definition.Markers)
-                    {
-                        markers.Add(marker.ToString());
-                    }
-
-                    lines.Add("  标记: " + string.Join(", ", markers));
                     if (effect.FrozenSource != null)
                     {
                         foreach (AttributeEntryState frozen in effect.FrozenSource.Attributes.Entries)

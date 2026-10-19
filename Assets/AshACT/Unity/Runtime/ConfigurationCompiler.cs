@@ -52,15 +52,15 @@ namespace AshACT.Unity
                 return false;
             }
 
-            return TryCompileSession(setup.Catalog, setup.Entities, setup.Effects, setup.Markers, out compiled, out issues);
+            return TryCompileSession(setup.Catalog, setup.Entities, setup.Effects, out compiled, out issues);
         }
 
         public static bool TryCompileSession(AttributeCatalogAsset catalog, EntityConfiguration[] entities,
-            EffectGraphAsset[] effects, MarkerConfiguration[] markers, out CompiledSessionConfiguration compiled,
+            EffectGraphAsset[] effects, out CompiledSessionConfiguration compiled,
             out IReadOnlyList<ConfigurationIssue> issues)
         {
             Context context = new Context(catalog);
-            compiled = context.CompileSession(entities, effects, markers);
+            compiled = context.CompileSession(entities, effects);
             issues = context.Issues.AsReadOnly();
             return compiled != null;
         }
@@ -74,7 +74,6 @@ namespace AshACT.Unity
             private readonly Dictionary<uint, CompiledProfile> m_Profiles = new Dictionary<uint, CompiledProfile>();
             private readonly Dictionary<uint, CompiledEffect> m_Effects = new Dictionary<uint, CompiledEffect>();
             private readonly Dictionary<ulong, uint> m_Entities = new Dictionary<ulong, uint>();
-            private readonly HashSet<uint> m_Markers = new HashSet<uint>();
 
             internal Context(AttributeCatalogAsset catalog)
             {
@@ -149,22 +148,14 @@ namespace AshACT.Unity
             }
 
             internal CompiledSessionConfiguration CompileSession(EntityConfiguration[] entities,
-                EffectGraphAsset[] effects, MarkerConfiguration[] markers)
+                EffectGraphAsset[] effects)
             {
                 CompiledAttributeCatalog catalog = Compile();
                 VersionedConfigurationAsset owner = m_Catalog;
                 if (catalog == null || !List(owner, "SessionSetup.Entities", entities) ||
-                    !List(owner, "SessionSetup.Effects", effects) || !List(owner, "SessionSetup.Markers", markers))
+                    !List(owner, "SessionSetup.Effects", effects))
                 {
                     return null;
-                }
-
-                foreach (MarkerConfiguration marker in markers)
-                {
-                    if (marker == null || marker.MarkerId == 0 || !m_Markers.Add(marker.MarkerId))
-                    {
-                        Error(owner, "SessionSetup.Markers", "InvalidId", "标记编号必须非零且唯一。");
-                    }
                 }
 
                 for (int i = 0; i < entities.Length; i++)
@@ -208,16 +199,6 @@ namespace AshACT.Unity
                     }
 
                     CompileEffect(effect);
-                    if (effect.MarkerIds != null)
-                    {
-                        for (int i = 0; i < effect.MarkerIds.Length; i++)
-                        {
-                            if (!m_Markers.Contains(effect.MarkerIds[i]))
-                            {
-                                Error(effect, $"MarkerIds[{i}]", "MissingMarker", "标记必须在本次初始化清单中声明。");
-                            }
-                        }
-                    }
                 }
 
                 return Issues.Count == 0 ? new CompiledSessionConfiguration(catalog, m_Profiles, m_Effects, m_Entities) : null;
@@ -243,6 +224,8 @@ namespace AshACT.Unity
                 }
 
                 int before = Issues.Count;
+                MarkerAuthoringValidation.TryValidateProfile(asset, out IReadOnlyList<ConfigurationIssue> markerIssues);
+                Issues.AddRange(markerIssues);
                 List<AttributeConfiguration> entries = new List<AttributeConfiguration>();
                 for (int i = 0; i < asset.Attributes.Length; i++)
                 {
@@ -284,9 +267,21 @@ namespace AshACT.Unity
             private void CompileEffect(EffectGraphAsset asset)
             {
                 int before = Issues.Count;
+                MarkerAuthoringValidation.TryValidateEffect(asset, null, out IReadOnlyList<ConfigurationIssue> markerIssues);
+                Issues.AddRange(markerIssues);
+                if (asset.MarkerOperations != null && asset.MarkerOperations.Length > 0)
+                {
+                    Error(asset, "MarkerOperations", "MarkerRuntimeUnavailable", "标记操作可编辑保存，但独立标记运行时尚未接入，不能生成可执行效果或会话。");
+                }
+
+                if (Issues.Count != before)
+                {
+                    return;
+                }
+
                 if (!List(asset, "Nodes", asset.Nodes, MaximumNodes) ||
                     !List(asset, "Modifiers", asset.Modifiers, MaximumModifiers) ||
-                    !List(asset, "MarkerIds", asset.MarkerIds) || !List(asset, "RequiredParameters", asset.RequiredParameters))
+                    !List(asset, "RequiredParameters", asset.RequiredParameters))
                 {
                     return;
                 }
@@ -364,19 +359,8 @@ namespace AshACT.Unity
                     }
                 }
 
-                MarkerId[] markers = new MarkerId[asset.MarkerIds.Length];
-                HashSet<uint> markerIds = new HashSet<uint>();
-                for (int i = 0; i < markers.Length; i++)
-                {
-                    markers[i] = new MarkerId(asset.MarkerIds[i]);
-                    if (!markerIds.Add(asset.MarkerIds[i]))
-                    {
-                        Error(asset, $"MarkerIds[{i}]", "DuplicateMarker", "同一效果不能重复声明相同标记。");
-                    }
-                }
-
                 EffectResult result = EffectDefinition.TryCreate(new EffectDefinitionId(asset.EffectDefinitionId),
-                    asset.DurationKind, asset.DurationFrames, asset.PeriodFrames, markers, modifiers, out EffectDefinition definition);
+                    asset.DurationKind, asset.DurationFrames, asset.PeriodFrames, modifiers, out EffectDefinition definition);
                 if (!result.Succeeded)
                 {
                     Error(asset, $"Modifiers[{result.ModifierIndex}]/Duration", result.Error.ToString(), "运行定义工厂拒绝该配置。");
@@ -556,7 +540,7 @@ namespace AshACT.Unity
                 if (asset == null || asset.SchemaVersion != VersionedConfigurationAsset.CurrentSchemaVersion || asset.ReleaseVersion <= 0 ||
                     (m_Catalog != null && asset.ReleaseVersion != m_Catalog.ReleaseVersion))
                 {
-                    Error(asset, "SchemaVersion/ReleaseVersion", "VersionMismatch", "要求协议版本 2，且参与编译的资产发布版本与通用属性库一致。");
+                    Error(asset, "SchemaVersion/ReleaseVersion", "VersionMismatch", $"要求协议版本 {VersionedConfigurationAsset.CurrentSchemaVersion}，且参与编译的资产发布版本与通用属性库一致。");
                     return false;
                 }
 

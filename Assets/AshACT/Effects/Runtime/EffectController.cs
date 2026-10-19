@@ -4,7 +4,7 @@ using AshACT.Attributes;
 
 namespace AshACT.Effects
 {
-    /// <summary>每个目标的效果索引；写入统一经过所属运行时，标记不占用属性。</summary>
+    /// <summary>每个目标的效果索引；写入统一经过所属运行时，不管理独立标记状态。</summary>
     public sealed class EffectController
     {
         private readonly SortedDictionary<EffectInstanceId, ActiveEffect> m_Active =
@@ -32,23 +32,6 @@ namespace AshACT.Effects
             ActiveEffect[] snapshot = new ActiveEffect[m_Active.Count];
             m_Active.Values.CopyTo(snapshot, 0);
             return Array.AsReadOnly(snapshot);
-        }
-
-        public int GetMarkerCount(MarkerId marker)
-        {
-            int count = 0;
-            foreach (ActiveEffect effect in m_Active.Values)
-            {
-                foreach (MarkerId candidate in effect.Spec.Definition.Markers)
-                {
-                    if (candidate == marker)
-                    {
-                        count++;
-                    }
-                }
-            }
-
-            return count;
         }
 
         internal void CopyFrom(EffectController candidate)

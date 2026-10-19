@@ -40,22 +40,39 @@ namespace AshACT.Effects
         /// <summary>已注册容器的模拟写入入口；每条命令后传播依赖，整批共同提交。</summary>
         public EffectResult TryExecute(EntityId entityId, IReadOnlyList<AttributeCommand> commands)
         {
+            return RunWrite(() => ExecuteCore(entityId, commands));
+        }
+
+        private EffectResult ExecuteCore(EntityId entityId, IReadOnlyList<AttributeCommand> commands)
+        {
             EffectResult writable = RequireInput(entityId);
             if (!writable.Succeeded)
             {
                 return writable;
             }
 
-            return Atomic(candidate => candidate.Execute(entityId, commands));
+            return Atomic(candidate => candidate.Execute(entityId, commands),
+                new AttributeChangeCause(AttributeChangeReason.DirectCommand, entityId));
         }
 
         public EffectResult TryDeactivate(EntityId entityId)
         {
+            return RunWrite(() => DeactivateCore(entityId));
+        }
+
+        private EffectResult DeactivateCore(EntityId entityId)
+        {
             EffectResult writable = RequireInput(entityId);
-            return writable.Succeeded ? Atomic(candidate => candidate.Deactivate(entityId)) : writable;
+            return writable.Succeeded ? Atomic(candidate => candidate.Deactivate(entityId),
+                new AttributeChangeCause(AttributeChangeReason.EntityDeactivated, entityId)) : writable;
         }
 
         public EffectResult TryReactivate(EntityId entityId)
+        {
+            return RunWrite(() => ReactivateCore(entityId));
+        }
+
+        private EffectResult ReactivateCore(EntityId entityId)
         {
             EffectResult writable = RequireInput(entityId);
             if (!writable.Succeeded)
@@ -128,13 +145,24 @@ namespace AshACT.Effects
             Fault = candidate.Fault;
         }
 
-        private EffectResult Atomic(Func<EffectRuntime, EffectResult> action)
+        private EffectResult Atomic(Func<EffectRuntime, EffectResult> action, AttributeChangeCause cause)
         {
             EffectRuntime candidate = ForkDomain();
             EffectResult result = action(candidate);
             if (result.Succeeded)
             {
+                if (cause.Reason == AttributeChangeReason.EffectApplied)
+                {
+                    cause = new AttributeChangeCause(cause.Reason, cause.TriggerEntityId,
+                        cause.SourceId, cause.DefinitionId, result.InstanceId);
+                }
+
+                List<AttributeChange> changes = CollectChanges(candidate, cause);
                 CommitDomain(candidate);
+                if (changes.Count != 0)
+                {
+                    m_ChangeBatches.Add(new ChangeBatch(changes));
+                }
             }
 
             return result;
@@ -294,7 +322,7 @@ namespace AshACT.Effects
                 controller.Commit(active);
             }
 
-            // 先检查完整新效果的图，连同尚未物化的修改器及标记一起拒绝环。
+            // 先检查完整新效果的图，连同尚未物化的修改器一起拒绝环。
             EffectResult graph = BuildOrder(out _);
             if (!graph.Succeeded)
             {

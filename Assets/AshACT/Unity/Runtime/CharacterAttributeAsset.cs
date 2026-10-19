@@ -19,5 +19,7 @@ namespace AshACT.Unity
     {
         public uint ConfigurationId;
         public CharacterAttributeEntry[] Attributes = Array.Empty<CharacterAttributeEntry>();
+        public MarkerCatalogAsset MarkerCatalog;
+        public uint[] ProducedMarkerIds = Array.Empty<uint>();
     }
 }

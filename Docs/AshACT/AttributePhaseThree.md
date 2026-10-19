@@ -2,6 +2,8 @@
 
 本阶段承接[第一阶段](AttributePhaseOne.md)与[第二阶段](AttributePhaseTwo.md)，落实[总体设计](AttributeSystemDesign.md)中效果运行时之后的实施步骤。实现位于 `Assets/AshACT/Attributes/Runtime` 与 `Assets/AshACT/Effects/Runtime`；没有新增具体业务属性、Unity 配置资产、场景、Prefab、可视化编辑器或网络调度器。
 
+当前已移除旧的效果附带标记与计数，标记请求接口另见[标记配置](MarkerAuthoring.md)。当前快照规范字节协议升为 2；末尾验收表仍是第三阶段当时的记录。
+
 ## 程序集与状态所有权
 
 ```text
@@ -54,11 +56,11 @@ EffectValue amount = EffectValue.Arithmetic(EffectArithmetic.Multiply,
 - 持续修改器的每个 Live 来源读取或目标读取 → 被修改属性 Current。
 - Frozen 来源没有实时边；目标读取仍保留。
 
-瞬时和周期表达式只在执行时求值，不建立持续依赖。即使 Override 暂时遮住其他修改器，也不删除其依赖边。直接自环、跨角色间接环、经过资源上限的环均在新效果应用时拒绝，拒绝包括全部修改器和标记，不消耗实例、句柄或应用序号。
+瞬时和周期表达式只在执行时求值，不建立持续依赖。即使 Override 暂时遮住其他修改器，也不删除其依赖边。直接自环、跨角色间接环、经过资源上限的环均在新效果应用时拒绝，拒绝包括全部修改器和效果实例，不消耗实例、句柄或应用序号。
 
 拓扑排序使用稳定有序集合，同级按 EntityId、AttributeId、Base/Current 升序。每次重算都先完成上游节点，再求该 Current 节点拥有的动态修改器，最后聚合。修改器仍按原应用序号聚合和选择 Override，拓扑顺序不改变持续聚合的第一阶段规则。
 
-每个单目标命令在整个模拟域的候选 Store 与效果索引上执行。命令中的每条属性操作之后执行稳定重算；整批成功后才把候选状态提交到原来的 Store 和 Controller 对象。任一受影响角色出现除零、溢出、缺失属性或非法资源范围，丢弃整批候选状态：数值、实例、标记、绑定、应用顺序、句柄/实例计数器与计时器均不部分提交。当前实现完整复制并重算全域，覆盖全部依赖闭包，优先保证正确性，尚未优化为只复制或重算脏闭包。
+每个单目标命令在整个模拟域的候选 Store 与效果索引上执行。命令中的每条属性操作之后执行稳定重算；整批成功后才把候选状态提交到原来的 Store 和 Controller 对象。任一受影响角色出现除零、溢出、缺失属性或非法资源范围，丢弃整批候选状态：数值、实例、绑定、应用顺序、句柄/实例计数器与计时器均不部分提交。当前实现完整复制并重算全域，覆盖全部依赖闭包，优先保证正确性，尚未优化为只复制或重算脏闭包。
 
 `ApplyMany` 保持按 EntityId 去重、排序、逐目标独立提交。单个目标失败不撤销已成功目标。到期与周期仍按全域实例 ID 排序，每个实例事务独立；必执行步骤失败进入 `Faulted`，保留此前成功的实例事务，失败事务回滚，后面的实例不执行，LastCompletedFrame 不前进。没有帧级自动重试或整帧回滚。
 
@@ -68,12 +70,12 @@ EffectValue amount = EffectValue.Arithmetic(EffectArithmetic.Multiply,
 
 1. 完成现有状态的依赖重算。
 2. 在清理目标自己身上效果之前，捕获其当前生命周期的不可变 `SourceSnapshot`，含全部属性 Base/Current Raw。
-3. 其他目标上仍为 Live、以该实体为来源的效果切到同一份 Frozen 快照，移除来源实时边。时长、周期、实例 ID、句柄与标记继续。
-4. 一次清除该目标身上全部效果及其修改器/标记，再统一重算并提交。外部独立注册的常量修改器仍由其所有者管理。
+3. 其他目标上仍为 Live、以该实体为来源的效果切到同一份 Frozen 快照，移除来源实时边。时长、周期、实例 ID、句柄继续。
+4. 一次清除该目标身上全部效果及其修改器，再统一重算并提交。外部独立注册的常量修改器仍由其所有者管理。
 
 清理或下游重算失败时，整个生命周期命令回滚，包括来源活跃状态与已经候选切换的绑定。成功离场后实体保留注册和固定属性配置，状态为 inactive；不从域中删除 EntityId，不接受新效果或属性写入。`TryReactivate` 递增生命周期并激活，具体 Base 初始化继续由外部战斗逻辑通过属性命令完成。
 
-旧效果保存自己的快照引用。第一次死亡的效果永远读第一次快照，复活后新效果绑定新生命周期，再次死亡只冻结仍为 Live 的效果。旧的 `ActiveEffect` 查询视图也不会被改写。目标死亡清除自身所有效果和标记，复活不恢复旧效果。若多个实体同帧离场，调用方按约定的实体/事件顺序逐个提交，快照点始终在该实体自身清理之前。
+旧效果保存自己的快照引用。第一次死亡的效果永远读第一次快照，复活后新效果绑定新生命周期，再次死亡只冻结仍为 Live 的效果。旧的 `ActiveEffect` 查询视图也不会被改写。目标死亡清除自身所有效果，复活不恢复旧效果。若多个实体同帧离场，调用方按约定的实体/事件顺序逐个提交，快照点始终在该实体自身清理之前。
 
 ## 完整状态与恢复协议
 
@@ -81,7 +83,7 @@ EffectValue amount = EffectValue.Arithmetic(EffectArithmetic.Multiply,
 
 | 状态 | 保存内容 |
 | --- | --- |
-| 协议与帧 | 协议版本 1、CurrentFrame、LastCompletedFrame、Phase、完整 Fault |
+| 协议与帧 | 协议版本 2、CurrentFrame、LastCompletedFrame、Phase、完整 Fault |
 | 域计数器 | LastInstanceId、LastModifierHandle |
 | 每角色 | EntityId、活跃状态、Lifecycle、固定属性配置完整身份 |
 | 每属性 | 初始配置/边界/资源上限、Base/Current Raw、持续命令及其句柄、优先级与应用序号、LastApplicationSequence |
@@ -100,7 +102,7 @@ EffectValue amount = EffectValue.Arithmetic(EffectArithmetic.Multiply,
 
 沿用 `EffectResult` 的目标、实例、修改器、参数、属性和底层 `AttributeResult`；新增 MissingSource、DependencyCycle、EntityInactive、InvalidState、ConfigurationMismatch、ModifierOwnedByEffect。未提交的候选实例不返回有效实例 ID；下游现有实例的错误保留其诊断身份。Store 的跨域注册拒绝复用 StoreAlreadyRegistered；直接写入受管 Store 返回 AttributeError.StoreOwnedByRuntime。
 
-新增 `EffectPhaseThreeTests`，保持第一、二阶段回归测试。测试覆盖四种读取、安全四则/负数 Raw 舍入、动态链/资源边/环、跨域原子失败、应用顺序、多目标独立提交、周期实时值、停帧、死亡清理前快照、复活后的两代快照、旧视图/共享快照、完整状态续演、配置不一致/损坏计数器拒绝和重复执行/不同注册顺序。续演比较完整规范字节和 SHA256，包括每个 Raw、ID、顺序、计时器、绑定及标记定义。
+新增 `EffectPhaseThreeTests`，保持第一、二阶段回归测试。测试覆盖四种读取、安全四则/负数 Raw 舍入、动态链/资源边/环、跨域原子失败、应用顺序、多目标独立提交、周期实时值、停帧、死亡清理前快照、复活后的两代快照、旧视图/共享快照、完整状态续演、配置不一致/损坏计数器拒绝和重复执行/不同注册顺序。续演比较完整规范字节和 SHA256，包括每个 Raw、ID、顺序、计时器及绑定。
 
 验证命令顺序执行，不并发争用项目锁：
 

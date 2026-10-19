@@ -2,6 +2,8 @@
 
 本阶段承接[第三阶段](AttributePhaseThree.md)，实现[总体设计](AttributeSystemDesign.md)最后一步的首期闭环。代码位于 `Assets/AshACT/Unity`，示例资产由本项目 Editor 的 AssetDatabase 创建。没有内置任何业务属性、扩展技能系统、安装包、升级 Unity 或改动场景与 Prefab。
 
+后续移除旧标记方案后，配置协议已升为 Schema 3：不再有 Effect 附带标记和 SessionSetup 标记清单。新的标记定义、角色产生声明及效果请求草稿见[标记配置](MarkerAuthoring.md)，目前尚未执行请求。末尾验收表保留第四阶段当时记录。
+
 ## 程序集与职责
 
 ```text
@@ -27,10 +29,10 @@ Unity 版本为 2022.3.62f1c1；配置面板使用 IMGUI、SerializedObject、Un
 | --- | --- |
 | AttributeDefinitionAsset | AttributeId、显示名、Stat/Resource、默认上下界、可选资源上限属性编号。 |
 | CharacterAttributeAsset | ConfigurationId、选择的属性定义、每个初始 Base，以及可选的角色专属上下界和资源上限。 |
-| EffectGraphAsset | EffectDefinitionId、时长、周期、标记、必填参数、数值节点与修改器。不绑定来源或目标角色。 |
+| EffectGraphAsset | EffectDefinitionId、时长、周期、标记操作草稿、必填参数、数值节点与修改器。不绑定来源或目标角色。 |
 | AttributeCatalogAsset | 跨场景共用的全部通用属性定义。只保存 Attributes，不保存角色、效果、实体或标记清单。 |
 
-上述配置资产都有 `SchemaVersion` 和 `ReleaseVersion`。当前协议为 Schema 2；发布版本必须为正数且参与同次编译的资产与共用属性库一致。版本 1 不自动当成新结构接受。当前项目示例已通过 Editor 的 AssetDatabase 迁移到版本 2：Catalog 仅保留属性定义，Effect 删除 SourceProfile，保留稳定编号、角色初值、图连接和画布位置。旧 SessionSetup 资产在检查无资源引用并备份后，通过同一项目的 AssetDatabase 移除。没有从名称计算编号、自动生成战斗实体 ID 或扫描加载资产充当运行目录。编号由项目开发者分配并持久保存，0 无效。EntityId 为 ulong，其余领域编号为 uint；节点编号是效果图内的正整数连接身份。
+上述配置资产都有 `SchemaVersion` 和 `ReleaseVersion`。当前协议为 Schema 3；发布版本必须为正数且参与同次编译的资产与共用属性库一致。版本 1/2 不自动当成新结构接受。项目示例此前通过 Editor 的 AssetDatabase 迁移到版本 2：Catalog 仅保留属性定义，Effect 删除 SourceProfile；本次移除旧标记时再升级为版本 3，继续保留稳定编号、角色初值、图连接和画布位置。旧 SessionSetup 资产在检查无资源引用并备份后，通过同一项目的 AssetDatabase 移除。没有从名称计算编号、自动生成战斗实体 ID 或扫描加载资产充当运行目录。编号由项目开发者分配并持久保存，0 无效。EntityId 为 ulong，其余领域编号为 uint；节点编号是效果图内的正整数连接身份。
 
 `AttributeSessionSetup` 是普通 C# 类，由战斗或角色系统在运行时通过 `new` 创建，不继承 ScriptableObject，也不保存为 SO、场景字段或配置文件。它没有独立的 SchemaVersion/ReleaseVersion，编译版本由 Catalog 及实际引用的配置资产共同决定。
 
@@ -39,7 +41,6 @@ Unity 版本为 2022.3.62f1c1；配置面板使用 IMGUI、SerializedObject、Un
 | Catalog | 共用的 AttributeCatalogAsset；定义系统可用的属性，不保存本次参战角色。 |
 | Effects | 本次会话允许使用的 EffectGraphAsset 数组；按 EffectDefinitionId 编译和查找。 |
 | Entities | EntityConfiguration 数组，每项是实际 EntityId 与 CharacterAttributeAsset 的绑定；同一角色配置可用于多个实体，各自创建独立 Store。 |
-| Markers | 本次会话声明的 MarkerConfiguration 数组，包含 MarkerId 和显示名；效果引用的标记须在其中声明。 |
 
 调用方可以复用配置资产，但每次初始化应明确本次实体和效果清单。Setup 是可变输入，CompiledSessionConfiguration 才是已锁定的只读结果；后续修改 Setup 不会直接改变已创建的会话。实体注册仍限于首帧之前，修改数组不会在运行中注册新角色。
 
@@ -59,7 +60,7 @@ Effect 没有 SourceProfile 或 TargetProfile 字段。施加时由调用方传�
 2. 按住节点的输出 port，拖到 Arithmetic 的 L/R 输入 port 或修改器的数值输入 port 后松开建立连线。输出允许多个连接，每个输入只接受一条连接，拖入新线替换旧输入。拖到空白处不创建连接；选中 Edge 按 Delete 断开，Undo 可恢复。画布支持滚轮缩放、中键平移、拖动节点和“适配画布”。没有先点击输出再点击输入的连线模式；面板中的连接编号只读。重复引用节点导出为不可变表达式树；表达式展开仍受运行时深度和数量限制。
 3. 在右侧通过“选中节点”下拉框或点击画布标题选择节点。面板只显示该类型需要的字段，支持删除选中节点；节点编号可显式修改，输入引用通过 port 修改并在面板中只读。Constant 使用十进制文本；SetByCaller 的 ParameterId 必须同时列入 RequiredParameters。SourceBase/SourceCurrent 的属性下拉框只提供施加者预览角色实际选用且已在 Catalog 注册的定义；未选预览角色时不能选择来源属性。TargetBase/TargetCurrent 和修改器在选了目标预览角色后按该角色筛选，否则提供通用库属性。选项按稳定编号排序，切换预览角色不会自动替换原编号，原编号无效时显示警告。实际角色仍在运行时校验。
 4. 点击“添加修改器”，在“选中修改器”面板选择目标属性，编辑 Add/Multiply/Divide/Override 与 Priority，通过 port 指定数值输入；ValueNodeId 在面板中只读。添加顺序就是瞬时/周期操作顺序。Priority 用于持续 Override；同优先级仍按实际应用顺序判胜。
-5. 配置 DurationKind、DurationFrames、PeriodFrames、MarkerIds。有限时长为正数；瞬时/无限时长字段为 0，周期为非负整数帧，瞬时周期必须为 0。底部时间轴展示从相对帧 0 施加、前八个有效周期与到期；有限区间为 `[0, DurationFrames)`，到期帧不触发周期。
+5. 配置 DurationKind、DurationFrames、PeriodFrames；标记请求在独立的操作列表配置。有限时长为正数；瞬时/无限时长字段为 0，周期为非负整数帧，瞬时周期必须为 0。底部时间轴展示从相对帧 0 施加、前八个有效周期与到期；有限区间为 `[0, DurationFrames)`，到期帧不触发周期。
 6. 点击“校验 / 编译”。编译成功展示锁定协议/发布版本；失败显示错误代码、资产、字段路径与节点编号。单个 Effect 的编译无需实体注册；已选来源预览角色时，另检查该角色是否具备所有来源读取属性。运行调试窗口编译当前临时 SessionSetup，并提供完整错误列表。保存按钮通过 AssetDatabase 保存资产；编辑记录支持 Undo。
 
 编辑面板是序列化配置编辑器，不执行任意 C# 节点。允许暂时输入无效文本或悬空连接以便编辑，校验失败时不能生成新会话。删除节点不会悄悄给其引用填入其他节点；悬空连接会被明确拒绝。
@@ -73,12 +74,12 @@ Effect 没有 SourceProfile 或 TargetProfile 字段。施加时由调用方传�
 | `TryCompile(catalog, out compiled, out issues)` | 仅通用属性定义，得到 CompiledAttributeCatalog。无关角色或效果的错误不会阻止属性库编译。 |
 | `TryCompileProfile(catalog, profile, out compiled, out issues)` | 在通用库中校验角色实际选择的属性、初值和角色边界。 |
 | `TryCompileEffect(catalog, effect, out compiled, out issues)` | 在通用库中校验通用效果图；不要求绑定任何角色或实体。 |
-| `TryCompileSession(setup, out compiled, out issues)` | 校验本次运行清单、实际注册角色、效果和标记，得到 CompiledSessionConfiguration。 |
-| `TryCompileSession(catalog, entities, effects, markers, out compiled, out issues)` | 运行方直接提供初始化数组，也可以省略 SessionSetup 对象包装。 |
+| `TryCompileSession(setup, out compiled, out issues)` | 校验本次运行清单、实际注册角色、效果及标记草稿限制，得到 CompiledSessionConfiguration。 |
+| `TryCompileSession(catalog, entities, effects, out compiled, out issues)` | 运行方直接提供初始化数组，也可以省略 SessionSetup 对象包装。 |
 
 同一角色资产可被多个实体使用；不同资产不能使用相同 ConfigurationId。只编译本次实体实际引用的角色，Catalog 不再注册所有角色或所有效果。
 
-检查覆盖：目录内同类编号非零/唯一、重复属性、必需资产引用、协议/发布版本一致、四位小数、初始值与上下界、分类、资源上限必须为本角色的 Stat、动态初始范围、必填参数声明、标记声明、目标属性和四种读取、修改器合法性、节点编号/输入缺失/表达式环/孤立节点、常量四则中的溢出或除零、完整倍率与除数，以及运行定义工厂的全部规则。
+检查覆盖：目录内同类编号非零/唯一、重复属性、必需资产引用、协议/发布版本一致、四位小数、初始值与上下界、分类、资源上限必须为本角色的 Stat、动态初始范围、必填参数声明、标记草稿、目标属性和四种读取、修改器合法性、节点编号/输入缺失/表达式环/孤立节点、常量四则中的溢出或除零、完整倍率与除数，以及运行定义工厂的全部规则。
 
 持续效果静态建图包含目录属性 Base → Current、目标读取 → 被修改属性 Current；拓扑检查不求值参数，因此不会因临时数值错误漏掉环。单个效果中不依赖具体目标配置的必然环在编译拒绝。不同目标可覆盖资源上限引用，因此上限 Stat Current → Resource Base 由实际目标在施加时建立并检查，不能用某个配置的默认上限替所有目标提前判环。来源与目标是否为同一实例、不同效果组合、跨角色实例形成的环继续在运行时施加时校验，整个相关事务原子拒绝。动态参数/属性表达式的具体数值合法性继续由运行时安全 FP64 运算和事务检查，不承诺编译能证明所有动态输入永远有效。
 
@@ -88,6 +89,8 @@ Effect 没有 SourceProfile 或 TargetProfile 字段。施加时由调用方传�
 
 ## Unity 接入与版本锁定
 
+后续新增的运行时属性订阅、状态恢复重置通知及 Host.SessionChanged 见[属性变化监听](AttributeNotifications.md)。以下第四阶段验收记录保留当时的验证范围，新增通知的验证单独记录。
+
 运行方显式组装普通 `AttributeSessionSetup`，调用编译器并创建 `AttributeSession`；使用 `AttributeRuntimeHost` 时调用 `TryInitialize(setup, out issues)`。Host 的 Setup 是运行时只读属性，Inspector 不配置初始化清单。不需要为了使用模块创建场景或 Prefab。编译失败保留 Host 的原 Setup 和会话，编译成功才一起发布新输入和完整新域。无参 `TryInitialize(out issues)` 使用上次成功提交的 Setup 重新初始化，首次初始化仍须由调用方提供数据。
 
 ```csharp
@@ -96,7 +99,6 @@ AttributeSessionSetup setup = new AttributeSessionSetup
 {
     Catalog = catalog,
     Effects = effects,
-    Markers = markers,
     Entities = entities
 };
 if (!host.TryInitialize(setup, out IReadOnlyList<ConfigurationIssue> issues))
@@ -131,15 +133,15 @@ if (!end.Succeeded)
 
 示例属性和效果 ID 来自示例资产；EntityId 由运行方分配，示例预览临时使用 1/2。计算库不内置这些业务编号。游戏应使用自己的稳定 ID 与确定性命令顺序。运行时修改 Setup 数组、角色绑定或资产值不会改变已编译会话；下一次初始化才读取新的输入。实体仍遵循既有运行时注册与整数帧协议，本次不扩展帧中注册规则。
 
-会话 Configuration 在构造后固定。`TryApply` 只能通过本会话的稳定定义编号查找已编译 EffectDefinition，校验 RequiredParameters，再调用既有 EffectSpec/EffectRuntime。调用中的 source 和 target 是运行时确定的 EntityId，不通过 FP64 数值参数传递角色配置。来源属性缺失、目标属性缺失、读取缺失或依赖环都会整笔失败，不留下部分数值、标记或实例。`Execute`、`Deactivate`、`Reactivate` 仍调用第三阶段事务入口。会话公开 Runtime 用于既有集成及保存恢复；直接调用底层 Runtime 的调用方仍负责遵守锁定定义清单，恢复时应传入本会话 Configuration.Effects 中的 Definition。
+会话 Configuration 在构造后固定。`TryApply` 只能通过本会话的稳定定义编号查找已编译 EffectDefinition，校验 RequiredParameters，再调用既有 EffectSpec/EffectRuntime。调用中的 source 和 target 是运行时确定的 EntityId，不通过 FP64 数值参数传递角色配置。来源属性缺失、目标属性缺失、读取缺失或依赖环都会整笔失败，不留下部分数值或实例。`Execute`、`Deactivate`、`Reactivate` 仍调用第三阶段事务入口。会话公开 Runtime 用于既有集成及保存恢复；直接调用底层 Runtime 的调用方仍负责遵守锁定定义清单，恢复时应传入本会话 Configuration.Effects 中的 Definition。
 
 没有 Update/FixedUpdate 自动推进、Unity Time 输入、全局角色数值单例或网络调度。调用方在同一模拟线程显式调用 BeginFrame/EndFrame，并检查每次返回值。编辑资产仅影响下一次成功初始化，即使继续使用相同的 ReleaseVersion 数字，已经创建的会话仍保持旧内容；建议发布新内容时递增发布版本以方便外部追踪。
 
 ## 真实运行调试
 
-`AshACT / 运行调试` 打开“临时预览配置”折叠面板，在窗口内选择 Catalog，添加效果、实体编号与角色配置、标记，点击初始化。没有 SessionSetup 资产选择框或保存入口；输入只保存在窗口的普通运行时对象中，程序集重载后需重新填写。初始化成功会收起临时配置，避免影响运行状态列表的可见范围。
+`AshACT / 运行调试` 打开“临时预览配置”折叠面板，在窗口内选择 Catalog，添加效果、实体编号与角色配置，点击初始化。没有 SessionSetup 资产选择框或保存入口；输入只保存在窗口的普通运行时对象中，程序集重载后需重新填写。初始化成功会收起临时配置，避免影响运行状态列表的可见范围。
 
-也可从效果图点击“运行调试”：将当前 Catalog、Effect 和预览角色带入临时输入。预览实体临时编号为 1/2，目标预览角色未指定时沿用来源预览角色；未选来源时需要在临时面板补充角色。预览标记根据该效果的 MarkerIds 去重填入，仅用于调试；正式运行仍由战斗系统提供清单。窗口还可以选择场景中的 AttributeRuntimeHost，读取已由运行方初始化的真实 Session。初始化和重新初始化均为显式操作，只读显示不会修改配置资产。
+也可从效果图点击“运行调试”：将当前 Catalog、Effect 和预览角色带入临时输入。预览实体临时编号为 1/2，目标预览角色未指定时沿用来源预览角色；未选来源时需要在临时面板补充角色。调试窗口不再组装旧标记清单；含新标记操作的草稿会明确拒绝运行初始化。窗口还可以选择场景中的 AttributeRuntimeHost，读取已由运行方初始化的真实 Session。初始化和重新初始化均为显式操作，只读显示不会修改配置资产。
 
 开始下一帧 → 施加/离场/复活 → 结束本帧，与既有整数帧协议一致。参数输入仍是四位小数文本。重复点击施加产生独立实例，不刷新旧效果。可以手动触发失败以查看错误，面板展示当前帧、完成帧、Phase、完整状态 Hash、Fault 和最近操作消息。
 
@@ -147,7 +149,7 @@ if (!end.Succeeded)
 
 - 实体活跃状态与生命周期；每属性 Base、Current、Raw、静态边界、动态上限编号。
 - 真实已物化持续命令的 A/M/D、完整 Raw、Override 胜者句柄/优先级/应用顺序，以及逐修改器句柄、数值和顺序。
-- 活跃实例、定义、来源 ID、Live/Frozen 绑定与来源生命周期、开始/到期/下次周期/周期帧、标记。
+- 活跃实例、定义、来源 ID、Live/Frozen 绑定与来源生命周期、开始/到期/下次周期/周期帧。
 - Base/Current 和资源上限边，以及活跃非周期效果的实时读取边。按稳定节点顺序列出，可沿公共节点追踪依赖路径；Frozen 来源不再贡献来源实时边，周期效果也不伪装成持续依赖。
 
 RuntimeDiagnostics 不读取配置资产猜测数值，不写回 Store；聚合诊断使用同一安全运算规则。调试窗口有意显示完整 Raw 以区分四位小数下看似相同的不同运行状态。列表使用固定行高，只绘制可见行，长行支持水平滚动。节点窗口复用 SerializedObject、时间轴文本与 GraphView 保留模式视觉树，仅在编辑、切换资产、Undo 或聚焦时重建；普通重绘不重建 Node/Port/Edge。单次显式采样仍需复制完整域并计算哈希，大规模运行域可保持手动刷新。

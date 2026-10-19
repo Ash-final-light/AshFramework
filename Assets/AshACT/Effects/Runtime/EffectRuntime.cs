@@ -31,6 +31,11 @@ namespace AshACT.Effects
         public EffectResult TryRegister(EntityId entityId, AttributeStore attributes, out EffectController controller)
         {
             controller = null;
+            if (IsPublishingNotifications)
+            {
+                return new EffectResult(EffectError.NotificationReentrancy, entityId);
+            }
+
             if (Phase == EffectFramePhase.Faulted)
             {
                 return new EffectResult(EffectError.Faulted, entityId);
@@ -76,6 +81,11 @@ namespace AshACT.Effects
 
         public EffectResult TryBeginFrame(long frame)
         {
+            return RunWrite(() => BeginFrameCore(frame));
+        }
+
+        private EffectResult BeginFrameCore(long frame)
+        {
             if (Phase == EffectFramePhase.Faulted)
             {
                 return new EffectResult(EffectError.Faulted);
@@ -115,6 +125,11 @@ namespace AshACT.Effects
 
         public EffectResult TryEndFrame()
         {
+            return RunWrite(EndFrameCore);
+        }
+
+        private EffectResult EndFrameCore()
+        {
             EffectResult writable = RequireInput();
             if (!writable.Succeeded)
             {
@@ -128,7 +143,8 @@ namespace AshACT.Effects
                     continue;
                 }
 
-                EffectResult transaction = Atomic(candidate => candidate.Tick(effect.Id, effect.TargetId));
+                EffectResult transaction = Atomic(candidate => candidate.Tick(effect.Id, effect.TargetId),
+                    CauseFor(AttributeChangeReason.PeriodicExecution, effect));
                 if (!transaction.Succeeded)
                 {
                     return Stop(transaction);
@@ -142,13 +158,20 @@ namespace AshACT.Effects
 
         public EffectResult TryApply(EntityId targetId, EffectSpec spec)
         {
+            return RunWrite(() => ApplyCore(targetId, spec));
+        }
+
+        private EffectResult ApplyCore(EntityId targetId, EffectSpec spec)
+        {
             EffectResult writable = RequireInput(targetId);
             if (!writable.Succeeded)
             {
                 return writable;
             }
 
-            EffectResult result = Atomic(candidate => candidate.Apply(targetId, spec));
+            EffectResult result = Atomic(candidate => candidate.Apply(targetId, spec),
+                new AttributeChangeCause(AttributeChangeReason.EffectApplied, targetId,
+                    spec?.SourceId ?? default, spec?.Definition.Id ?? default));
             if (!result.Succeeded && result.InstanceId.Value > LastInstanceId)
             {
                 return new EffectResult(result.Error, result.TargetId, modifierIndex: result.ModifierIndex,
@@ -160,6 +183,16 @@ namespace AshACT.Effects
 
         /// <summary>去重并按实体编号升序执行，每个目标独立提交；结果顺序与执行顺序一致。</summary>
         public IReadOnlyList<EffectResult> ApplyMany(IReadOnlyList<EntityId> targets, EffectSpec spec)
+        {
+            if (IsPublishingNotifications)
+            {
+                return Array.AsReadOnly(new[] { new EffectResult(EffectError.NotificationReentrancy) });
+            }
+
+            return RunOperation(() => ApplyManyCore(targets, spec));
+        }
+
+        private IReadOnlyList<EffectResult> ApplyManyCore(IReadOnlyList<EntityId> targets, EffectSpec spec)
         {
             if (targets == null)
             {
@@ -185,6 +218,11 @@ namespace AshACT.Effects
 
         public EffectResult TryRemove(EntityId targetId, EffectInstanceId instanceId)
         {
+            return RunWrite(() => RemoveCore(targetId, instanceId));
+        }
+
+        private EffectResult RemoveCore(EntityId targetId, EffectInstanceId instanceId)
+        {
             EffectResult writable = RequireInput(targetId);
             if (!writable.Succeeded)
             {
@@ -201,12 +239,12 @@ namespace AshACT.Effects
                 return new EffectResult(EffectError.MissingInstance, targetId, instanceId);
             }
 
-            return Atomic(candidate => candidate.RemoveCore(effect));
+            return Atomic(candidate => candidate.RemoveCore(effect), CauseFor(AttributeChangeReason.EffectRemoved, effect));
         }
 
         private EffectResult Remove(ActiveEffect effect)
         {
-            return Atomic(candidate => candidate.RemoveCore(effect));
+            return Atomic(candidate => candidate.RemoveCore(effect), CauseFor(AttributeChangeReason.EffectExpired, effect));
         }
 
         private List<ActiveEffect> OrderedEffects()

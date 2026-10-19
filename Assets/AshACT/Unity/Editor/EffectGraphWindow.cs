@@ -7,7 +7,7 @@ using UnityEngine.UIElements;
 
 namespace AshACT.Unity.Editor
 {
-    public sealed class EffectGraphWindow : EditorWindow
+    public sealed partial class EffectGraphWindow : EditorWindow
     {
         [SerializeField] private EffectGraphAsset m_Graph;
         [SerializeField] private AttributeCatalogAsset m_Catalog;
@@ -32,6 +32,7 @@ namespace AshACT.Unity.Editor
 
         public void SetPreviewContext(CharacterAttributeAsset source, CharacterAttributeAsset target = null)
         {
+            m_MarkerValidation = null;
             m_SourcePreview = source;
             m_TargetPreview = target;
             Invalidate();
@@ -48,6 +49,8 @@ namespace AshACT.Unity.Editor
             EffectGraphWindow window = GetWindow<EffectGraphWindow>("AshACT 效果图");
             window.minSize = new Vector2(1000, 650);
             window.m_Graph = graph;
+            window.m_MarkerValidation = null;
+            window.m_Validation = "配置尚未校验；标记操作仅保存草稿，请分别校验草稿与运行配置。";
             if (catalog != null)
             {
                 window.m_Catalog = catalog;
@@ -147,6 +150,8 @@ namespace AshACT.Unity.Editor
             m_Serialized = m_Graph == null ? null : new SerializedObject(m_Graph);
             m_SourceOptions = new EffectAttributeOptions(m_Catalog, m_SourcePreview, true);
             m_TargetOptions = new EffectAttributeOptions(m_Catalog, m_TargetPreview, false);
+            m_AddMarkerOptions = new EffectMarkerOptions(m_Graph?.MarkerCatalog, m_SourcePreview, true);
+            m_RemoveMarkerOptions = new EffectMarkerOptions(m_Graph?.MarkerCatalog, null, false);
             EffectValueNode[] nodes = m_Graph?.Nodes ?? Array.Empty<EffectValueNode>();
             m_NodeChoices = new string[nodes.Length];
             for (int i = 0; i < nodes.Length; i++)
@@ -177,6 +182,8 @@ namespace AshACT.Unity.Editor
                 if (graph != m_Graph)
                 {
                     m_Graph = graph;
+                    m_MarkerValidation = null;
+                    m_Validation = "配置尚未校验；标记操作仅保存草稿，请分别校验草稿与运行配置。";
                     Invalidate();
                 }
 
@@ -261,12 +268,14 @@ namespace AshACT.Unity.Editor
                 SetPreviewContext(source, target);
             }
 
-            EditorGUILayout.HelpBox("预览角色只用于筛选属性，不保存到 Effect。实际施加者和目标由运行时传入。", MessageType.None);
+            EditorGUILayout.HelpBox("预览角色用于筛选属性和可产生标记，不保存到 Effect。实际施加者和目标由运行时传入。", MessageType.None);
             m_Serialized.UpdateIfRequiredOrScript();
             foreach (string name in s_EffectFields)
             {
                 EditorGUILayout.PropertyField(m_Serialized.FindProperty(name), true);
             }
+
+            DrawMarkerOperations();
 
             if (m_NodeChoices.Length > 0)
             {
@@ -337,6 +346,7 @@ namespace AshACT.Unity.Editor
 
             if (m_Serialized.ApplyModifiedProperties())
             {
+                m_MarkerValidation = null;
                 Invalidate();
                 m_Validation = "配置已修改，请重新校验 / 编译。";
             }
@@ -345,7 +355,7 @@ namespace AshACT.Unity.Editor
         private static readonly string[] s_EffectFields =
         {
             "SchemaVersion", "ReleaseVersion", "EffectDefinitionId", "DurationKind",
-            "DurationFrames", "PeriodFrames", "MarkerIds", "RequiredParameters"
+            "DurationFrames", "PeriodFrames", "RequiredParameters"
         };
 
         private static void Field(SerializedProperty parent, string name)

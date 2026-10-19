@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f1c55891d0f533141aaf14f0176bb4c1, type: 3}
   m_Name: Character
   m_EditorClassIdentifier: 
-  SchemaVersion: 2
+  SchemaVersion: 3
   ReleaseVersion: 1
   ConfigurationId: 1
   Attributes:
@@ -28,3 +28,5 @@ MonoBehaviour:
     Minimum: 0.0000
     Maximum: 1000.0000
     MaximumAttributeId: 0
+  MarkerCatalog: {fileID: 11400000, guid: 6e6d3ea217377ff4b928d1fd932720bb, type: 2}
+  ProducedMarkerIds: 

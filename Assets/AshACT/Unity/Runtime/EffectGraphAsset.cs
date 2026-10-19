@@ -36,7 +36,8 @@ namespace AshACT.Unity
         public EffectDurationKind DurationKind;
         public long DurationFrames;
         public long PeriodFrames;
-        public uint[] MarkerIds = Array.Empty<uint>();
+        public MarkerCatalogAsset MarkerCatalog;
+        public EffectMarkerOperation[] MarkerOperations = Array.Empty<EffectMarkerOperation>();
         public uint[] RequiredParameters = Array.Empty<uint>();
         public EffectValueNode[] Nodes = Array.Empty<EffectValueNode>();
         public EffectModifierNode[] Modifiers = Array.Empty<EffectModifierNode>();

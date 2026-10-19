@@ -41,6 +41,18 @@ namespace AshACT.Unity
             return LastResult;
         }
 
+        /// <summary>订阅本会话属性变化；更换会话时应释放旧令牌并重新绑定。</summary>
+        public IDisposable Subscribe(ulong entityId, uint attributeId, Action<AttributeChange> callback,
+            AttributeChangeChannels channels = AttributeChangeChannels.Current)
+        {
+            return Runtime.Subscribe(new EntityId(entityId), new AttributeId(attributeId), callback, channels);
+        }
+
+        public IDisposable SubscribeStateReset(Action<RuntimeStateReset> callback)
+        {
+            return Runtime.SubscribeStateReset(callback);
+        }
+
         public EffectResult EndFrame()
         {
             LastResult = Runtime.TryEndFrame();

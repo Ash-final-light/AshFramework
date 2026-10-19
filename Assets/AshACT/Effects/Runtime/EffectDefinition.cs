@@ -47,43 +47,29 @@ namespace AshACT.Effects
         public EffectDurationKind DurationKind { get; }
         public long DurationFrames { get; }
         public long PeriodFrames { get; }
-        public IReadOnlyList<MarkerId> Markers { get; }
         public IReadOnlyList<EffectModifier> Modifiers { get; }
 
         private EffectDefinition(EffectDefinitionId id, EffectDurationKind durationKind,
-            long durationFrames, long periodFrames, MarkerId[] markers, EffectModifier[] modifiers)
+            long durationFrames, long periodFrames, EffectModifier[] modifiers)
         {
             Id = id;
             DurationKind = durationKind;
             DurationFrames = durationFrames;
             PeriodFrames = periodFrames;
-            Markers = Array.AsReadOnly(markers);
             Modifiers = Array.AsReadOnly(modifiers);
         }
 
         public static EffectResult TryCreate(EffectDefinitionId id, EffectDurationKind durationKind,
-            long durationFrames, long periodFrames, IReadOnlyList<MarkerId> markers,
+            long durationFrames, long periodFrames,
             IReadOnlyList<EffectModifier> modifiers, out EffectDefinition definition)
         {
             definition = null;
-            if (!id.IsValid || markers == null || modifiers == null || periodFrames < 0 ||
+            if (!id.IsValid || modifiers == null || periodFrames < 0 ||
                 durationKind < EffectDurationKind.Instant || durationKind > EffectDurationKind.Infinite ||
                 (durationKind == EffectDurationKind.Finite ? durationFrames <= 0 : durationFrames != 0) ||
                 (durationKind == EffectDurationKind.Instant && periodFrames != 0))
             {
                 return new EffectResult(EffectError.InvalidDefinition);
-            }
-
-            MarkerId[] markerCopy = new MarkerId[markers.Count];
-            HashSet<MarkerId> unique = new HashSet<MarkerId>();
-            for (int i = 0; i < markerCopy.Length; i++)
-            {
-                if (!markers[i].IsValid || !unique.Add(markers[i]))
-                {
-                    return new EffectResult(EffectError.InvalidDefinition);
-                }
-
-                markerCopy[i] = markers[i];
             }
 
             EffectModifier[] modifierCopy = new EffectModifier[modifiers.Count];
@@ -112,7 +98,7 @@ namespace AshACT.Effects
                 modifierCopy[i] = modifier;
             }
 
-            definition = new EffectDefinition(id, durationKind, durationFrames, periodFrames, markerCopy, modifierCopy);
+            definition = new EffectDefinition(id, durationKind, durationFrames, periodFrames, modifierCopy);
             return new EffectResult(EffectError.None);
         }
 

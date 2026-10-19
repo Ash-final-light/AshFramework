@@ -27,7 +27,7 @@ namespace AshACT.Effects
     /// <summary>首期进程内只读恢复协议；规范字节用于完整等价比较和 SHA256 校验。</summary>
     public sealed class EffectRuntimeState
     {
-        public const int ProtocolVersion = 1;
+        public const int ProtocolVersion = 2;
         public long CurrentFrame { get; }
         public long LastCompletedFrame { get; }
         public ulong LastInstanceId { get; }
@@ -176,12 +176,6 @@ namespace AshACT.Effects
             writer.Write((int)definition.DurationKind);
             writer.Write(definition.DurationFrames);
             writer.Write(definition.PeriodFrames);
-            writer.Write(definition.Markers.Count);
-            foreach (MarkerId marker in definition.Markers)
-            {
-                writer.Write(marker.Value);
-            }
-
             writer.Write(definition.Modifiers.Count);
             foreach (EffectModifier modifier in definition.Modifiers)
             {
@@ -237,6 +231,11 @@ namespace AshACT.Effects
 
         /// <summary>调用方先注册相同实体和属性配置，再提供锁定的效果定义清单。失败不改变当前域。</summary>
         public EffectResult TryRestoreState(EffectRuntimeState state, IReadOnlyList<EffectDefinition> definitions)
+        {
+            return RunWrite(() => RestoreStateCore(state, definitions));
+        }
+
+        private EffectResult RestoreStateCore(EffectRuntimeState state, IReadOnlyList<EffectDefinition> definitions)
         {
             if (state == null || definitions == null || !ValidFrameState(state))
             {
@@ -336,7 +335,9 @@ namespace AshACT.Effects
                 return new EffectResult(EffectError.InvalidState);
             }
 
+            long previousFrame = CurrentFrame;
             CommitDomain(candidate);
+            m_ChangeBatches.Add(new ChangeBatch(null, new RuntimeStateReset(previousFrame, CurrentFrame, Phase)));
             return new EffectResult(EffectError.None);
         }
 

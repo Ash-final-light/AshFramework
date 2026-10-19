@@ -7,7 +7,6 @@ namespace AshACT.Unity
     {
         public AttributeCatalogAsset Catalog;
         public EffectGraphAsset[] Effects = Array.Empty<EffectGraphAsset>();
-        public MarkerConfiguration[] Markers = Array.Empty<MarkerConfiguration>();
         public EntityConfiguration[] Entities = Array.Empty<EntityConfiguration>();
     }
 }

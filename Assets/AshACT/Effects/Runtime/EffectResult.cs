@@ -28,7 +28,8 @@ namespace AshACT.Effects
         EntityInactive,
         InvalidState,
         ConfigurationMismatch,
-        ModifierOwnedByEffect
+        ModifierOwnedByEffect,
+        NotificationReentrancy
     }
 
     /// <summary>包含目标、实例、配置项和底层属性事务错误的只读结果。</summary>

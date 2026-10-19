@@ -11,7 +11,6 @@ namespace AshACT.Effects.Tests
         private static readonly AttributeId Stat = new AttributeId(1);
         private static readonly AttributeId Other = new AttributeId(2);
         private static readonly EntityId Target = new EntityId(10);
-        private static readonly MarkerId Marker = new MarkerId(7);
 
         [Test]
         public void ReapplicationCreatesIndependentInstancesAndModifierHandles()
@@ -45,14 +44,14 @@ namespace AshACT.Effects.Tests
         }
 
         [Test]
-        public void PureMarkersNeedNoAttributesAndCountPerInstanceUntilTheirOwnExpiry()
+        public void EmptyEffectsNeedNoAttributesAndKeepIndependentExpiry()
         {
             EffectRuntime runtime = Runtime(out EffectController controller, empty: true);
-            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, 2, markers: new[] { Marker }));
+            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, 2));
             Begin(runtime, 0);
             Apply(runtime, spec);
             Apply(runtime, spec);
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(2));
+            Assert.That(controller.ActiveCount, Is.EqualTo(2));
             Assert.That(controller.Attributes.AttributeIds.Count, Is.Zero);
             Assert.That(runtime.LastModifierHandle, Is.Zero);
             End(runtime);
@@ -60,35 +59,35 @@ namespace AshACT.Effects.Tests
             Apply(runtime, spec);
             End(runtime);
             Begin(runtime, 2);
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
+            Assert.That(controller.ActiveCount, Is.EqualTo(1));
             End(runtime);
             Begin(runtime, 3);
-            Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
+            Assert.That(controller.ActiveCount, Is.Zero);
         }
 
         [Test]
-        public void InfiniteMarkerSurvivesFramesAndRemovalIsExplicitAndScoped()
+        public void InfiniteEmptyEffectSurvivesFramesAndRemovalIsExplicitAndScoped()
         {
             EffectRuntime runtime = Runtime(out EffectController controller, empty: true);
             Begin(runtime, 0);
-            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Infinite, markers: new[] { Marker })));
+            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Infinite)));
             controller.TryGetActive(applied.InstanceId, out ActiveEffect active);
             Assert.That(active.EndFrame, Is.Null);
             Assert.That(active.NextPeriodFrame, Is.Null);
             End(runtime);
             Begin(runtime, 1);
             Assert.That(runtime.TryRemove(new EntityId(99), applied.InstanceId).Error, Is.EqualTo(EffectError.MissingTarget));
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
+            Assert.That(controller.ActiveCount, Is.EqualTo(1));
             Success(runtime.TryRemove(Target, applied.InstanceId));
             Assert.That(runtime.TryRemove(Target, applied.InstanceId).Error, Is.EqualTo(EffectError.MissingInstance));
-            Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
+            Assert.That(controller.ActiveCount, Is.Zero);
         }
 
         [Test]
-        public void InstantEffectsChangeBaseAndLeaveNoActiveInstanceOrMarker()
+        public void InstantEffectsChangeBaseAndLeaveNoActiveInstance()
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
-            EffectSpec spec = Spec(Definition(EffectDurationKind.Instant, markers: new[] { Marker },
+            EffectSpec spec = Spec(Definition(EffectDurationKind.Instant,
                 modifiers: new[] { Constant(AttributeOperation.Multiply, FP64.FromRaw(FP64.OneRaw + FP64.HalfRaw)) }));
             Begin(runtime, 0);
             EffectResult first = Apply(runtime, spec);
@@ -96,7 +95,6 @@ namespace AshACT.Effects.Tests
             Assert.That(second.InstanceId.Value, Is.EqualTo(first.InstanceId.Value + 1));
             Value(controller, 225, 225);
             Assert.That(controller.ActiveCount, Is.Zero);
-            Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
             Assert.That(runtime.LastModifierHandle, Is.Zero);
             Assert.That(runtime.TryRemove(Target, first.InstanceId).Error, Is.EqualTo(EffectError.MissingInstance));
         }
@@ -137,12 +135,11 @@ namespace AshACT.Effects.Tests
         public void PeriodStartsAfterOnePeriodAndNeverFiresOnExpiry(int duration, int period, int ticks)
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
-            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, duration, period,
-                new[] { Marker }, new[] { Add(10) }));
+            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, duration, period, new[] { Add(10) }));
             Begin(runtime, 0);
             EffectResult applied = Apply(runtime, spec);
             Value(controller, 100, 100);
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
+            Assert.That(controller.ActiveCount, Is.EqualTo(1));
             controller.TryGetActive(applied.InstanceId, out ActiveEffect active);
             Assert.That(active.ModifierHandles.Count, Is.Zero);
             End(runtime);
@@ -152,7 +149,6 @@ namespace AshACT.Effects.Tests
                 if (frame == duration)
                 {
                     Assert.That(controller.ActiveCount, Is.Zero);
-                    Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
                 }
 
                 End(runtime);
@@ -204,16 +200,16 @@ namespace AshACT.Effects.Tests
         public void ExpiryRunsBeforeNewInputAndNewInstancesDoNotRefreshOldOnes()
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
-            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, 1, markers: new[] { Marker }, modifiers: new[] { Add(10) }));
+            EffectSpec spec = Spec(Definition(EffectDurationKind.Finite, 1, modifiers: new[] { Add(10) }));
             Begin(runtime, 0);
             EffectResult old = Apply(runtime, spec);
             End(runtime);
             Begin(runtime, 1);
-            Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
+            Assert.That(controller.ActiveCount, Is.Zero);
             Value(controller, 100, 100);
             EffectResult replacement = Apply(runtime, spec);
             Assert.That(replacement.InstanceId, Is.Not.EqualTo(old.InstanceId));
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
+            Assert.That(controller.ActiveCount, Is.EqualTo(1));
         }
 
         [TestCase(EffectDurationKind.Instant, 0)]
@@ -221,11 +217,10 @@ namespace AshACT.Effects.Tests
         [TestCase(EffectDurationKind.Finite, 1)]
         [TestCase(EffectDurationKind.Infinite, 0)]
         [TestCase(EffectDurationKind.Infinite, 1)]
-        public void MissingAttributeRejectsEntireEffectIncludingMarkers(EffectDurationKind kind, int period)
+        public void MissingAttributeRejectsEntireEffect(EffectDurationKind kind, int period)
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
-            EffectSpec spec = Spec(Definition(kind, kind == EffectDurationKind.Finite ? 3 : 0, period,
-                new[] { Marker }, new[] { Add(10), new EffectModifier(Other, AttributeOperation.Add,
+            EffectSpec spec = Spec(Definition(kind, kind == EffectDurationKind.Finite ? 3 : 0, period, new[] { Add(10), new EffectModifier(Other, AttributeOperation.Add,
                     new EffectValue(EffectValueKind.Constant, FP64.One)) }));
             Begin(runtime, 0);
             EffectResult result = runtime.TryApply(Target, spec);
@@ -240,12 +235,12 @@ namespace AshACT.Effects.Tests
         [TestCase(EffectDurationKind.Finite, 1)]
         [TestCase(EffectDurationKind.Infinite, 0)]
         [TestCase(EffectDurationKind.Infinite, 1)]
-        public void MissingCallerRejectsEntireEffectIncludingMarkers(EffectDurationKind kind, int period)
+        public void MissingCallerRejectsEntireEffect(EffectDurationKind kind, int period)
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
             Begin(runtime, 0);
             EffectResult result = runtime.TryApply(Target, Spec(Definition(kind,
-                kind == EffectDurationKind.Finite ? 3 : 0, period, new[] { Marker }, new[] { Add(10), Caller(42) })));
+                kind == EffectDurationKind.Finite ? 3 : 0, period, new[] { Add(10), Caller(42) })));
             Assert.That(result.Error, Is.EqualTo(EffectError.MissingParameter));
             Assert.That(result.ParameterId, Is.EqualTo(42));
             Assert.That(result.ModifierIndex, Is.EqualTo(1));
@@ -259,8 +254,7 @@ namespace AshACT.Effects.Tests
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
             Begin(runtime, 0);
-            EffectResult result = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite, period: 1,
-                markers: new[] { Marker }, modifiers: new[] { Caller(1, operation) }), new EffectParameter(1, FP64.FromInt(amount))));
+            EffectResult result = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite, period: 1, modifiers: new[] { Caller(1, operation) }), new EffectParameter(1, FP64.FromInt(amount))));
             Assert.That(result.Error, Is.EqualTo(EffectError.InvalidParameter));
             NoCommit(runtime, controller);
         }
@@ -270,8 +264,7 @@ namespace AshACT.Effects.Tests
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
             Begin(runtime, 0);
-            EffectResult result = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite,
-                markers: new[] { Marker }, modifiers: new[] { Add(10),
+            EffectResult result = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite, modifiers: new[] { Add(10),
                     Constant(AttributeOperation.Multiply, FP64.FromInt(1000000000)) })));
             Assert.That(result.Error, Is.EqualTo(EffectError.AttributeFailure));
             Assert.That(result.AttributeResult.Error, Is.EqualTo(AttributeError.Overflow));
@@ -288,8 +281,7 @@ namespace AshACT.Effects.Tests
             Success(runtime.TryRegister(Target, Store(new AttributeConfiguration(Stat, FP64.FromInt(100),
                 FP64.Zero, FP64.FromInt(1000), AttributeKind.Resource)), out EffectController controller));
             Begin(runtime, 0);
-            EffectResult failure = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite,
-                markers: new[] { Marker }, modifiers: new[] { Add(10) })));
+            EffectResult failure = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Infinite, modifiers: new[] { Add(10) })));
             Assert.That(failure.AttributeResult.Error, Is.EqualTo(AttributeError.ResourceModifierNotAllowed));
             NoCommit(runtime, controller);
             Apply(runtime, Spec(Definition(EffectDurationKind.Instant, modifiers: new[] { Add(-5) })));
@@ -310,7 +302,7 @@ namespace AshACT.Effects.Tests
             Success(runtime.TryRegister(last, Store(Config(100)), out EffectController other));
             Begin(runtime, 0);
             IReadOnlyList<EffectResult> results = runtime.ApplyMany(new[] { last, missing, Target, last },
-                Spec(Definition(EffectDurationKind.Infinite, markers: new[] { Marker }, modifiers: new[] { Add(10) })));
+                Spec(Definition(EffectDurationKind.Infinite, modifiers: new[] { Add(10) })));
             Assert.That(results.Count, Is.EqualTo(3));
             Assert.That(results[0].TargetId, Is.EqualTo(Target));
             Assert.That(results[0].InstanceId.Value, Is.EqualTo(1));
@@ -320,7 +312,7 @@ namespace AshACT.Effects.Tests
             Assert.That(results[2].InstanceId.Value, Is.EqualTo(2));
             Value(controller, 100, 110);
             Value(other, 100, 110);
-            Assert.That(empty.GetMarkerCount(Marker), Is.Zero);
+            Assert.That(empty.ActiveCount, Is.Zero);
         }
 
         [Test]
@@ -345,8 +337,7 @@ namespace AshACT.Effects.Tests
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
             Begin(runtime, 0);
-            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Infinite, period: 1,
-                markers: new[] { Marker }, modifiers: new[] { Add(10), Constant(AttributeOperation.Multiply, FP64.FromInt(1000000000)) })));
+            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Infinite, period: 1, modifiers: new[] { Add(10), Constant(AttributeOperation.Multiply, FP64.FromInt(1000000000)) })));
             End(runtime);
             Begin(runtime, 1);
             EffectResult error = runtime.TryEndFrame();
@@ -373,20 +364,18 @@ namespace AshACT.Effects.Tests
             Success(runtime.TryRegister(Target, Store(Config(100), new AttributeConfiguration(resource,
                 FP64.FromInt(50), FP64.FromInt(50), FP64.FromInt(1000), AttributeKind.Resource, Stat)), out EffectController controller));
             Begin(runtime, 0);
-            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Finite, 1,
-                markers: new[] { Marker }, modifiers: new[] { Add(100) })));
+            EffectResult applied = Apply(runtime, Spec(Definition(EffectDurationKind.Finite, 1, modifiers: new[] { Add(100) })));
             Apply(runtime, Spec(Definition(EffectDurationKind.Instant,
                 modifiers: new[] { Constant(AttributeOperation.Override, FP64.Zero) })));
             EffectResult failed = runtime.TryRemove(Target, applied.InstanceId);
             Assert.That(failed.Error, Is.EqualTo(EffectError.AttributeFailure));
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
+            Assert.That(controller.ActiveCount, Is.EqualTo(1));
             Value(controller, 0, 100);
             End(runtime);
             EffectResult expired = runtime.TryBeginFrame(1);
             Assert.That(expired.Error, Is.EqualTo(EffectError.AttributeFailure));
             Assert.That(runtime.Phase, Is.EqualTo(EffectFramePhase.Faulted));
             Assert.That(controller.ActiveCount, Is.EqualTo(1));
-            Assert.That(controller.GetMarkerCount(Marker), Is.EqualTo(1));
             Value(controller, 0, 100);
         }
 
@@ -430,8 +419,7 @@ namespace AshACT.Effects.Tests
             Begin(runtime, 0);
             End(runtime);
             Begin(runtime, 1);
-            EffectResult error = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Finite, long.MaxValue,
-                markers: new[] { Marker }, modifiers: new[] { Add(10) })));
+            EffectResult error = runtime.TryApply(Target, Spec(Definition(EffectDurationKind.Finite, long.MaxValue, modifiers: new[] { Add(10) })));
             Assert.That(error.Error, Is.EqualTo(EffectError.FrameOverflow));
             NoCommit(runtime, controller);
         }
@@ -453,7 +441,7 @@ namespace AshACT.Effects.Tests
         }
 
         [Test]
-        public void RepeatedSimulationProducesSameRawIdsHandlesMarkersAndSchedule()
+        public void RepeatedSimulationProducesSameRawIdsHandlesAndSchedule()
         {
             Assert.That(Replay(), Is.EqualTo(Replay()));
         }
@@ -527,7 +515,7 @@ namespace AshACT.Effects.Tests
         {
             EffectRuntime runtime = Runtime(out EffectController controller);
             List<string> states = new List<string>();
-            EffectSpec periodic = Spec(Definition(EffectDurationKind.Finite, 4, 1, new[] { Marker }, new[] { Add(3) }));
+            EffectSpec periodic = Spec(Definition(EffectDurationKind.Finite, 4, 1, new[] { Add(3) }));
             EffectSpec persistent = Spec(Definition(EffectDurationKind.Finite, 3, modifiers: new[] { Add(7) }));
             for (int frame = 0; frame <= 5; frame++)
             {
@@ -540,7 +528,7 @@ namespace AshACT.Effects.Tests
 
                 End(runtime);
                 controller.Attributes.TryGetValue(Stat, out AttributeValue value);
-                states.Add($"{frame}:{value.BaseValue.Raw}:{value.CurrentValue.Raw}:{runtime.LastInstanceId}:{runtime.LastModifierHandle}:{controller.GetMarkerCount(Marker)}");
+                states.Add($"{frame}:{value.BaseValue.Raw}:{value.CurrentValue.Raw}:{runtime.LastInstanceId}:{runtime.LastModifierHandle}:{controller.ActiveCount}");
                 foreach (ActiveEffect active in controller.GetActiveEffects())
                 {
                     states.Add($"{active.Id}:{active.StartFrame}:{active.EndFrame}:{active.NextPeriodFrame}:{string.Join(",", active.ModifierHandles)}");
@@ -568,11 +556,9 @@ namespace AshACT.Effects.Tests
             return store;
         }
 
-        private static EffectDefinition Definition(EffectDurationKind kind, long duration = 0, long period = 0,
-            MarkerId[] markers = null, EffectModifier[] modifiers = null, uint id = 1)
+        private static EffectDefinition Definition(EffectDurationKind kind, long duration = 0, long period = 0, EffectModifier[] modifiers = null, uint id = 1)
         {
-            Success(EffectDefinition.TryCreate(new EffectDefinitionId(id), kind, duration, period,
-                markers ?? Array.Empty<MarkerId>(), modifiers ?? Array.Empty<EffectModifier>(), out EffectDefinition definition));
+            Success(EffectDefinition.TryCreate(new EffectDefinitionId(id), kind, duration, period, modifiers ?? Array.Empty<EffectModifier>(), out EffectDefinition definition));
             return definition;
         }
 
@@ -630,7 +616,6 @@ namespace AshACT.Effects.Tests
         {
             Value(controller, 100, 100);
             Assert.That(controller.ActiveCount, Is.Zero);
-            Assert.That(controller.GetMarkerCount(Marker), Is.Zero);
             Assert.That(runtime.LastInstanceId, Is.Zero);
             Assert.That(runtime.LastModifierHandle, Is.Zero);
             Assert.That(controller.Attributes.LastApplicationSequence, Is.Zero);

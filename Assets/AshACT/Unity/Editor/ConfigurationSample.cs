@@ -48,7 +48,6 @@ namespace AshACT.Unity.Editor
             effect.EffectDefinitionId = 1001;
             effect.DurationKind = EffectDurationKind.Finite;
             effect.DurationFrames = 120;
-            effect.MarkerIds = new uint[] { 1 };
             effect.RequiredParameters = new uint[] { 7 };
             effect.Nodes = new[]
             {
@@ -65,7 +64,6 @@ namespace AshACT.Unity.Editor
             AttributeSessionSetup setup = new AttributeSessionSetup();
             setup.Catalog = catalog;
             setup.Effects = new[] { effect };
-            setup.Markers = new[] { new MarkerConfiguration { MarkerId = 1, DisplayName = "示例标记" } };
             setup.Entities = new[]
             {
                 new EntityConfiguration { EntityId = 1, Profile = profile },

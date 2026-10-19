@@ -15,7 +15,6 @@ namespace AshACT.Effects.Tests
         private static readonly EntityId C = new EntityId(30);
         private static readonly AttributeId X = new AttributeId(1);
         private static readonly AttributeId Y = new AttributeId(2);
-        private static readonly MarkerId Mark = new MarkerId(1);
 
         [TestCase(EffectValueKind.SourceBase, 10)]
         [TestCase(EffectValueKind.SourceCurrent, 15)]
@@ -75,7 +74,7 @@ namespace AshACT.Effects.Tests
 
         [TestCase(false)]
         [TestCase(true)]
-        public void DirectAndCrossEntityCyclesRejectTheWholeEffectAndMarker(bool crossEntity)
+        public void DirectAndCrossEntityCyclesRejectTheWholeEffect(bool crossEntity)
         {
             EffectRuntime runtime = World(out _, out EffectController b);
             Begin(runtime, 0);
@@ -89,7 +88,7 @@ namespace AshACT.Effects.Tests
                 Spec(2, Read(crossEntity ? EffectValueKind.SourceCurrent : EffectValueKind.TargetCurrent), B));
             Assert.That(rejected.Error, Is.EqualTo(EffectError.DependencyCycle));
             Assert.That(runtime.CaptureState().GetCanonicalBytes(), Is.EqualTo(before.GetCanonicalBytes()));
-            Assert.That(b.GetMarkerCount(Mark), Is.EqualTo(crossEntity ? 1 : 0));
+            Assert.That(b.ActiveCount, Is.EqualTo(crossEntity ? 1 : 0));
         }
 
         [Test]
@@ -216,7 +215,6 @@ namespace AshACT.Effects.Tests
             Ok(runtime.TryDeactivate(A));
             Value(a, X, 10, 10);
             Assert.That(a.ActiveCount, Is.Zero);
-            Assert.That(a.GetMarkerCount(Mark), Is.Zero);
             b.TryGetActive(first.InstanceId, out ActiveEffect frozenFirst);
             Assert.That(frozenFirst.FrozenSource.Lifecycle, Is.EqualTo(1));
             Value(b, X, 100, 115);
@@ -228,13 +226,12 @@ namespace AshACT.Effects.Tests
             b.TryGetActive(second.InstanceId, out ActiveEffect frozenSecond);
             Assert.That(frozenSecond.FrozenSource.Lifecycle, Is.EqualTo(2));
             Assert.That(frozenFirst.FrozenSource, Is.Not.SameAs(frozenSecond.FrozenSource));
-            Assert.That(b.GetMarkerCount(Mark), Is.EqualTo(2));
+            Assert.That(b.ActiveCount, Is.EqualTo(2));
             Ok(runtime.TryReactivate(A));
             Set(runtime, A, X, 80);
             Value(b, X, 100, 145);
             Ok(runtime.TryDeactivate(B));
             Assert.That(b.ActiveCount, Is.Zero);
-            Assert.That(b.GetMarkerCount(Mark), Is.Zero);
             Ok(runtime.TryReactivate(B));
             Value(b, X, 100, 100);
         }
@@ -539,7 +536,7 @@ namespace AshACT.Effects.Tests
             Assert.That(runtime.LastCompletedFrame, Is.Zero);
             Value(a, X, 10, 20);
             Value(b, X, 100, 101);
-            Assert.That(a.GetMarkerCount(Mark), Is.EqualTo(1));
+            Assert.That(a.ActiveCount, Is.EqualTo(1));
             EffectRuntime restored = World(out _, out _);
             Ok(restored.TryRestoreState(runtime.CaptureState(), new[] { boost.Definition, dependent.Definition }));
             Assert.That(restored.CaptureState().Hash, Is.EqualTo(runtime.CaptureState().Hash));
@@ -588,20 +585,19 @@ namespace AshACT.Effects.Tests
         }
 
         [Test]
-        public void PeriodWithoutFutureTickAndPureMarkerStateRestoreWithTheirTimers()
+        public void PeriodWithoutFutureTickAndEmptyEffectStateRestoreWithTheirTimers()
         {
             EffectRuntime runtime = World(out _, out _);
             EffectSpec noTick = Spec(1, Read(EffectValueKind.SourceBase), A, EffectDurationKind.Finite,
                 duration: 2, period: 3);
-            Ok(EffectDefinition.TryCreate(new EffectDefinitionId(2), EffectDurationKind.Infinite, 0, 0,
-                new[] { Mark }, Array.Empty<EffectModifier>(), out EffectDefinition marker));
-            Ok(EffectSpec.TryCreate(marker, A, Array.Empty<EffectParameter>(), out EffectSpec markerSpec));
+            Ok(EffectDefinition.TryCreate(new EffectDefinitionId(2), EffectDurationKind.Infinite, 0, 0, Array.Empty<EffectModifier>(), out EffectDefinition emptyEffect));
+            Ok(EffectSpec.TryCreate(emptyEffect, A, Array.Empty<EffectParameter>(), out EffectSpec emptySpec));
             Begin(runtime, 0);
             Apply(runtime, B, noTick);
-            Apply(runtime, C, markerSpec);
+            Apply(runtime, C, emptySpec);
             End(runtime);
             EffectRuntime restored = World(out _, out _);
-            Ok(restored.TryRestoreState(runtime.CaptureState(), new[] { noTick.Definition, marker }));
+            Ok(restored.TryRestoreState(runtime.CaptureState(), new[] { noTick.Definition, emptyEffect }));
             for (int frame = 1; frame <= 3; frame++)
             {
                 Begin(runtime, frame);
@@ -683,7 +679,7 @@ namespace AshACT.Effects.Tests
             EffectDurationKind kind = EffectDurationKind.Infinite, long duration = 0, long period = 0,
             AttributeOperation operation = AttributeOperation.Add, AttributeId attribute = default)
         {
-            return EffectDefinition.TryCreate(new EffectDefinitionId(id), kind, duration, period, new[] { Mark },
+            return EffectDefinition.TryCreate(new EffectDefinitionId(id), kind, duration, period,
                 new[] { new EffectModifier(attribute.IsValid ? attribute : X, operation, value) }, out definition);
         }
 

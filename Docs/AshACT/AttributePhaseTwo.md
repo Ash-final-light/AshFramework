@@ -2,6 +2,8 @@
 
 本阶段代码位于 `Assets/AshACT/Effects`，复用[第一阶段](AttributePhaseOne.md)的 `AttributeStore` 事务和安全 FP64 数值规则。原始总体方案见 [AttributeSystemDesign.md](AttributeSystemDesign.md)。本阶段没有 Unity 配置资产、场景、Prefab 或可视化编辑器。
 
+当前源码已移除旧的效果附带标记模型，标记定义与请求接口见[标记配置](MarkerAuthoring.md)。下面的效果行为按移除后的实现说明；末尾保留当时验收记录。
+
 ## 程序集与所有权
 
 ```text
@@ -19,26 +21,26 @@ AshFramework.FixedPoint
 
 ## 只读定义与施加输入
 
-- `EffectDefinition.TryCreate` 校验并复制定义编号、持续类型、时长、周期、标记和修改器配置。标记 ID 必须非零、同一定义中不得重复；修改器保留配置顺序。公开集合只读且不暴露原数组。
+- `EffectDefinition.TryCreate` 校验并复制定义编号、持续类型、时长、周期和修改器配置；修改器保留配置顺序。公开集合只读且不暴露原数组。
 - `EffectSpec.TryCreate` 复制来源 ID 与参数，拒绝空对象、零 ID、重复参数与超出统一配置范围的值。定义与 Spec 可以复用；每次成功 `TryApply` 均分配新实例。
 - `EffectValueKind.Constant` 使用配置 FP64 常量；`SetByCaller` 使用非零参数 ID，并且所有引用的参数均为必填。缺失参数在对该目标施加时返回 `MissingParameter`。完整倍率非负、完整除数至少为 1，沿用第一阶段规则。
 - `SourceBase/SourceCurrent/TargetBase/TargetCurrent/Arithmetic` 等节点在定义工厂明确返回 `UnsupportedValueSource`，不隐式使用零或快照代替。
 - `EffectDefinitionId` 只标识配置种类，不建立全局配置注册表。调用方应在战斗开始前保证同编号配置一致并锁定版本，不在战斗期间替换定义含义。
 
-`EntityId` 与 `EffectInstanceId` 使用 ulong，`EffectDefinitionId` 与 `MarkerId` 使用 uint，0 均为无效。所有 ID 均不按名称、加载顺序或 Unity 实例编号推导。
+`EntityId` 与 `EffectInstanceId` 使用 ulong，`EffectDefinitionId` 使用 uint；独立标记请求仍使用 uint 的 `MarkerId`，0 均为无效。所有 ID 均不按名称、加载顺序或 Unity 实例编号推导。
 
-## 数值、标记和事务
+## 数值、实例和事务
 
 | 效果 | 施加时 | 后续与移除 |
 | --- | --- | --- |
-| 瞬时 | 一批 `Instant` 命令按配置顺序修改 BaseValue。 | 不留下 ActiveEffect、标记或句柄。成功结果中的实例 ID 作为此次执行身份，不能再移除。 |
+| 瞬时 | 一批 `Instant` 命令按配置顺序修改 BaseValue。 | 不留下 ActiveEffect 或句柄。成功结果中的实例 ID 作为此次执行身份，不能再移除。 |
 | 有限或无限、无周期 | 一批 `AddPersistent` 注册常量修改器。 | 仅影响 Stat CurrentValue；移除或到期时一批 `RemovePersistent`，以最新 BaseValue 重算。 |
-| 有限或无限、有周期 | 验证必需属性与操作数，登记实例和标记，不执行数值修改。 | 每次到点提交一批 `Instant` 修改 BaseValue；移除不撤销历史触发。Resource 可以接收周期修改。 |
-| 纯标记 | 可在空 AttributeStore 上独立登记实例。 | 不创建属性或修改器句柄；同一标签按独立活跃实例计数，分别移除与到期。 |
+| 有限或无限、有周期 | 验证必需属性与操作数，登记实例，不执行数值修改。 | 每次到点提交一批 `Instant` 修改 BaseValue；移除不撤销历史触发。Resource 可以接收周期修改。 |
+| 空效果 | 可在空 AttributeStore 上独立登记实例。 | 不创建属性或修改器句柄，只保留效果自身的计时和身份。 |
 
-对单个目标，全部参数与属性预检成功后才执行属性事务；属性事务失败不登记标记、实例或计时，也不消耗实例 ID、句柄计数器或 Store 应用序号。周期效果在施加时验证输入和属性存在性；依赖当时 BaseValue 的算术溢出在真正触发时检查，不能通过施加时提前执行一次来改变数值。
+对单个目标，全部参数与属性预检成功后才执行属性事务；属性事务失败不登记实例或计时，也不消耗实例 ID、句柄计数器或 Store 应用序号。周期效果在施加时验证输入和属性存在性；依赖当时 BaseValue 的算术溢出在真正触发时检查，不能通过施加时提前执行一次来改变数值。
 
-标记查询直接从活跃实例计算，不维护可能脱节的独立全局计数。瞬时定义中携带的标记不会持续存在；需要持续标记时使用有限或无限定义。
+EffectController 只查询活跃效果，不从效果数量推导标记。独立标记请求的处理尚未接入运行时。
 
 `ApplyMany` 将目标集合去重，按稳定 EntityId 升序逐个执行，并按该顺序返回每个目标的结果。某个目标失败不回滚其他目标；失败不消耗实例编号，因此成功目标按实际提交顺序得到连续 ID。输入目标列表中的重复 ID 在一次多目标调用中只执行一次；需要重复施加时再次调用。
 
@@ -52,7 +54,7 @@ AshFramework.FixedPoint
 
 有限效果区间严格为 `[StartFrame, EndFrame)`，`EndFrame = StartFrame + DurationFrames`；溢出时整个施加返回 `FrameOverflow`。无限效果的 EndFrame 为 null。第一次周期在 `StartFrame + PeriodFrames`，开始帧无立即触发，后续间隔不受其他效果施加影响。到期帧先移除，无额外周期。
 
-例如第 0 帧施加时长 4、周期 2 的效果，只在第 2 帧触发一次；时长 5 时在第 2、4 帧触发。周期不小于时长时没有数值触发，标记仍存在完整持续区间。`NextPeriodFrame = null` 表示无周期、有限区间内无后续周期，或后续周期超出 long 可表示帧域；使用溢出前判断，不回绕到负帧。达到 long.MaxValue 后不能继续推进。
+例如第 0 帧施加时长 4、周期 2 的效果，只在第 2 帧触发一次；时长 5 时在第 2、4 帧触发。周期不小于时长时没有数值触发，效果实例仍存在完整持续区间。`NextPeriodFrame = null` 表示无周期、有限区间内无后续周期，或后续周期超出 long 可表示帧域；使用溢出前判断，不回绕到负帧。达到 long.MaxValue 后不能继续推进。
 
 必执行的到期或周期事务失败时，`Phase` 进入 `Faulted`，`Fault` 保存原始错误，`LastCompletedFrame` 不前进；后续写入统一返回 `Faulted`。较早成功的其他实例事务可能已提交，因此该帧整体不可重试或继续。当前没有帧级回滚；调用方必须停止模拟并诊断。主动 `TryRemove` 或施加失败只拒绝该命令，不锁定运行时。
 
@@ -62,7 +64,7 @@ AshFramework.FixedPoint
 
 `ActiveEffect` 是不可变视图，记录 Spec、目标、开始/结束/下次周期帧和修改器句柄。周期成功后以新视图替换旧视图；调用者保留的旧视图不会被悄悄改写。`GetActiveEffects()` 返回按实例 ID 升序排列的只读快照。移除后旧视图仅供诊断，需用 `TryGetActive` 查询当前存活性。
 
-`TryRemove(targetId, instanceId)` 必须同时指定所属目标。移除中任一底层命令失败，整个移除事务回滚，原实例及标记保留；移除成功后再移除返回 `MissingInstance`。EffectRuntime 拥有效果创建的句柄，外部不能移除或复用它们；若破坏该约定，底层 Store 的句柄校验会将错误显式返回，系统到期失败会停止模拟。外部直接创建的修改器不会随效果移除。
+`TryRemove(targetId, instanceId)` 必须同时指定所属目标。移除中任一底层命令失败，整个移除事务回滚，原实例保留；移除成功后再移除返回 `MissingInstance`。EffectRuntime 拥有效果创建的句柄，外部不能移除或复用它们；若破坏该约定，底层 Store 的句柄校验会将错误显式返回，系统到期失败会停止模拟。外部直接创建的修改器不会随效果移除。
 
 当前不提供 Dispose 自动清理、目标注销、死亡/离场处理或完整保存恢复；这些必须与后续生命周期、快照和模拟协调阶段一起设计。
 
@@ -105,7 +107,7 @@ if (!end.Succeeded)
 
 ## 验证
 
-测试位于 `Effects/Tests/Editor`，命名空间 `AshACT.Effects.Tests`。覆盖定义/参数防御性复制、未支持节点、独立实例、纯标记、持续/瞬时/周期与 Resource 行为、Override 顺序、移除重算、到期边界、整批原子失败、多目标排序、句柄共存、帧协议、调度错误停止与重复模拟的 Raw/ID/句柄/计时一致性。
+测试位于 `Effects/Tests/Editor`，命名空间 `AshACT.Effects.Tests`。覆盖定义/参数防御性复制、未支持节点、独立实例、空效果、持续/瞬时/周期与 Resource 行为、Override 顺序、移除重算、到期边界、整批原子失败、多目标排序、句柄共存、帧协议、调度错误停止与重复模拟的 Raw/ID/句柄/计时一致性。
 
 ```powershell
 python .codex/scripts/workflow.py --project D:/UnityProject/AshFramework verify --task csharp --include Assets/AshACT/Effects

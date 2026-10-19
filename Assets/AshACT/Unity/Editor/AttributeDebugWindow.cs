@@ -63,21 +63,10 @@ namespace AshACT.Unity.Editor
         public static AttributeDebugWindow OpenPreview(AttributeCatalogAsset catalog, EffectGraphAsset effect,
             CharacterAttributeAsset source = null, CharacterAttributeAsset target = null)
         {
-            List<MarkerConfiguration> markers = new List<MarkerConfiguration>();
-            HashSet<uint> ids = new HashSet<uint>();
-            foreach (uint id in effect?.MarkerIds ?? Array.Empty<uint>())
-            {
-                if (ids.Add(id))
-                {
-                    markers.Add(new MarkerConfiguration { MarkerId = id, DisplayName = "预览标记" });
-                }
-            }
-
             return Open(new AttributeSessionSetup
             {
                 Catalog = catalog,
                 Effects = effect == null ? Array.Empty<EffectGraphAsset>() : new[] { effect },
-                Markers = markers.ToArray(),
                 Entities = new[]
                 {
                     new EntityConfiguration { EntityId = 1, Profile = source },
@@ -205,7 +194,6 @@ namespace AshACT.Unity.Editor
                 m_Setup.Catalog = (AttributeCatalogAsset)EditorGUILayout.ObjectField("通用属性库", m_Setup.Catalog, typeof(AttributeCatalogAsset), false);
                 DrawPreviewEffects();
                 DrawPreviewEntities();
-                DrawPreviewMarkers();
             }
         }
 
@@ -271,48 +259,6 @@ namespace AshACT.Unity.Editor
             if (GUILayout.Button("添加预览实体"))
             {
                 m_Setup.Entities = Append(m_Setup.Entities, new EntityConfiguration());
-            }
-        }
-
-        private void DrawPreviewMarkers()
-        {
-            EditorGUILayout.LabelField("标记编号 / 显示名", EditorStyles.boldLabel);
-            MarkerConfiguration[] markers = m_Setup.Markers;
-            for (int i = 0; markers != null && i < markers.Length; i++)
-            {
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    MarkerConfiguration marker = markers[i];
-                    if (marker != null)
-                    {
-                        long id = EditorGUILayout.LongField(marker.MarkerId, GUILayout.Width(130));
-                        if (id >= 0 && id <= uint.MaxValue)
-                        {
-                            marker.MarkerId = (uint)id;
-                        }
-                        else
-                        {
-                            m_Message = "标记编号必须在 uint 的范围内。";
-                        }
-
-                        marker.DisplayName = EditorGUILayout.TextField(marker.DisplayName);
-                    }
-                    else
-                    {
-                        GUILayout.Label("空标记配置");
-                    }
-
-                    if (GUILayout.Button("移除", GUILayout.Width(50)))
-                    {
-                        m_Setup.Markers = RemoveAt(markers, i);
-                        break;
-                    }
-                }
-            }
-
-            if (GUILayout.Button("添加预览标记"))
-            {
-                m_Setup.Markers = Append(m_Setup.Markers, new MarkerConfiguration());
             }
         }
 
