@@ -1,0 +1,10 @@
+{
+    "name": "AshACT.Unity.Diagnostics",
+    "rootNamespace": "AshACT.Unity",
+    "references": [
+        "AshACT.Attributes",
+        "AshACT.Effects",
+        "AshFramework.FixedPoint"
+    ],
+    "autoReferenced": true
+}

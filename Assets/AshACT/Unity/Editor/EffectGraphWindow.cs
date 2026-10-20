@@ -24,6 +24,7 @@ namespace AshACT.Unity.Editor
         private bool m_RefreshScheduled;
         private string[] m_NodeChoices = Array.Empty<string>();
         private string[] m_ModifierChoices = Array.Empty<string>();
+        private IReadOnlyList<ConfigurationIssue> m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
         private string m_TimelineHeader;
         private string m_TimelineTicks;
         private string m_Validation = "从输出 port 按住拖到输入 port 后松开建立连接；选中连线按 Delete 删除。";
@@ -48,9 +49,10 @@ namespace AshACT.Unity.Editor
         {
             EffectGraphWindow window = GetWindow<EffectGraphWindow>("AshACT 效果图");
             window.minSize = new Vector2(1000, 650);
+            window.m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
             window.m_Graph = graph;
             window.m_MarkerValidation = null;
-            window.m_Validation = "配置尚未校验；标记操作仅保存草稿，请分别校验草稿与运行配置。";
+            window.m_Validation = "配置尚未校验；校验只检查配置，不创建运行状态。";
             if (catalog != null)
             {
                 window.m_Catalog = catalog;
@@ -117,7 +119,8 @@ namespace AshACT.Unity.Editor
 
         private void Changed()
         {
-            m_Validation = "配置已修改，请重新校验 / 编译。";
+            m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
+            m_Validation = "配置已修改，请重新校验。";
             Invalidate();
         }
 
@@ -181,26 +184,23 @@ namespace AshACT.Unity.Editor
                 EffectGraphAsset graph = (EffectGraphAsset)EditorGUILayout.ObjectField(m_Graph, typeof(EffectGraphAsset), false);
                 if (graph != m_Graph)
                 {
+                    m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
                     m_Graph = graph;
                     m_MarkerValidation = null;
-                    m_Validation = "配置尚未校验；标记操作仅保存草稿，请分别校验草稿与运行配置。";
+                    m_Validation = "配置尚未校验；校验只检查配置，不创建运行状态。";
                     Invalidate();
                 }
 
                 AttributeCatalogAsset catalog = (AttributeCatalogAsset)EditorGUILayout.ObjectField(m_Catalog, typeof(AttributeCatalogAsset), false);
                 if (catalog != m_Catalog)
                 {
+                    m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
                     m_Catalog = catalog;
                     Invalidate();
                 }
-                if (GUILayout.Button("校验 / 编译", EditorStyles.toolbarButton, GUILayout.Width(90)))
+                if (GUILayout.Button("校验配置", EditorStyles.toolbarButton, GUILayout.Width(90)))
                 {
                     ValidateCatalog();
-                }
-
-                if (GUILayout.Button("运行调试", EditorStyles.toolbarButton, GUILayout.Width(80)))
-                {
-                    AttributeDebugWindow.OpenPreview(m_Catalog, m_Graph, m_SourcePreview, m_TargetPreview);
                 }
 
                 if (GUILayout.Button("保存", EditorStyles.toolbarButton, GUILayout.Width(50)))
@@ -248,6 +248,11 @@ namespace AshACT.Unity.Editor
             m_InspectorScroll = EditorGUILayout.BeginScrollView(m_InspectorScroll);
             EditorGUILayout.LabelField($"配置面板 / 选中节点 {m_Selected}", EditorStyles.boldLabel);
             DrawInspector();
+            foreach (ConfigurationIssue issue in m_ConfigurationIssues)
+            {
+                EditorGUILayout.HelpBox(issue.ToString(), MessageType.Error);
+            }
+
             EditorGUILayout.EndScrollView();
         }
 
@@ -261,14 +266,14 @@ namespace AshACT.Unity.Editor
         private void DrawInspector()
         {
             EditorGUI.BeginChangeCheck();
-            CharacterAttributeAsset source = (CharacterAttributeAsset)EditorGUILayout.ObjectField("施加者预览角色", m_SourcePreview, typeof(CharacterAttributeAsset), false);
-            CharacterAttributeAsset target = (CharacterAttributeAsset)EditorGUILayout.ObjectField("目标预览角色（可选）", m_TargetPreview, typeof(CharacterAttributeAsset), false);
+            CharacterAttributeAsset source = (CharacterAttributeAsset)EditorGUILayout.ObjectField("施加者配置上下文", m_SourcePreview, typeof(CharacterAttributeAsset), false);
+            CharacterAttributeAsset target = (CharacterAttributeAsset)EditorGUILayout.ObjectField("目标配置上下文（可选）", m_TargetPreview, typeof(CharacterAttributeAsset), false);
             if (EditorGUI.EndChangeCheck())
             {
                 SetPreviewContext(source, target);
             }
 
-            EditorGUILayout.HelpBox("预览角色用于筛选属性和可产生标记，不保存到 Effect。实际施加者和目标由运行时传入。", MessageType.None);
+            EditorGUILayout.HelpBox("角色配置仅用于筛选属性和可产生标记，不创建角色运行状态，也不保存到 Effect。", MessageType.None);
             m_Serialized.UpdateIfRequiredOrScript();
             foreach (string name in s_EffectFields)
             {
@@ -348,7 +353,8 @@ namespace AshACT.Unity.Editor
             {
                 m_MarkerValidation = null;
                 Invalidate();
-                m_Validation = "配置已修改，请重新校验 / 编译。";
+                m_ConfigurationIssues = Array.Empty<ConfigurationIssue>();
+                m_Validation = "配置已修改，请重新校验。";
             }
         }
 
@@ -433,7 +439,7 @@ namespace AshACT.Unity.Editor
         private void BuildTimeline()
         {
             string end = m_Graph.DurationKind == EffectDurationKind.Finite ? m_Graph.DurationFrames.ToString() : "∞";
-            m_TimelineHeader = $"整数帧时间轴：施加 0    区间 [0, {end})    周期 {m_Graph.PeriodFrames} 帧    到期先移除，施加帧不触发周期";
+            m_TimelineHeader = $"配置时间轴（外部整数帧）：施加 0    区间 [0, {end})    周期 {m_Graph.PeriodFrames} 帧    到期先移除，施加帧不触发周期";
             if (m_Graph.DurationKind == EffectDurationKind.Instant)
             {
                 m_TimelineTicks = "0: 瞬时修改 Base，无活跃实例。";
@@ -459,9 +465,10 @@ namespace AshACT.Unity.Editor
 
         private void ValidateCatalog()
         {
-            bool success = ConfigurationCompiler.TryCompileEffect(m_Catalog, m_Graph, out CompiledEffect compiled, out IReadOnlyList<ConfigurationIssue> issues);
-            m_Validation = success ? $"效果 {compiled.Definition.Id} 编译成功；实际角色属性在运行时施加时校验。" :
-                issues.Count == 0 ? "编译失败。" : issues[0].ToString() + $"（共 {issues.Count} 项，调试窗口可查看全部）";
+            bool success = ConfigurationValidator.TryValidateEffect(m_Catalog, m_Graph, out IReadOnlyList<ConfigurationIssue> issues);
+            m_ConfigurationIssues = issues;
+            m_Validation = success ? $"效果 {m_Graph.EffectDefinitionId} 配置校验通过；未执行效果。" :
+                issues.Count == 0 ? "配置校验未通过。" : issues[0].ToString() + $"（共 {issues.Count} 项）";
             if (success && m_SourcePreview != null)
             {
                 EffectAttributeOptions options = new EffectAttributeOptions(m_Catalog, m_SourcePreview, true);
@@ -470,7 +477,7 @@ namespace AshACT.Unity.Editor
                     if ((node.Kind == EffectValueKind.SourceBase || node.Kind == EffectValueKind.SourceCurrent) && options.IndexOf(node.AttributeId) < 0)
                     {
                         m_Selected = node.NodeId;
-                        m_Validation = $"通用效果编译成功，但施加者预览角色不具备节点 #{node.NodeId} 所读属性 {node.AttributeId}，该角色无法施加此效果。";
+                        m_Validation = $"通用效果配置校验通过，但所选施加者配置未声明节点 #{node.NodeId} 所读属性 {node.AttributeId}，请检查所选角色配置。";
                         break;
                     }
                 }

@@ -111,8 +111,7 @@ namespace AshACT.Unity.Tests
             m_Profile.ProducedMarkerIds = new uint[] { 10, id };
             Assert.That(MarkerAuthoringValidation.TryValidateProfile(m_Profile, out var issues), Is.False);
             Assert.That(issues.Any(issue => issue.Code == "InvalidProducedMarker"), Is.True);
-            Assert.That(ConfigurationCompiler.TryCompileProfile(m_Attributes, m_Profile, out var compiled, out issues), Is.False);
-            Assert.That(compiled, Is.Null);
+            Assert.That(ConfigurationValidator.TryValidateProfile(m_Attributes, m_Profile, out issues), Is.False);
         }
 
         [Test]
@@ -169,35 +168,6 @@ namespace AshACT.Unity.Tests
             Assert.That(MarkerAuthoringValidation.TryValidateEffect(m_Effect, m_Profile, out var issues), Is.False);
             Assert.That(issues.Any(issue => issue.Code == code), Is.True, string.Join("\n", issues));
             Assert.That(EditorJsonUtility.ToJson(m_Effect), Is.EqualTo(before));
-        }
-
-        [Test]
-        public void ValidDraftCannotBeSilentlyCompiledOrReplaceExistingSession()
-        {
-            Assert.That(MarkerAuthoringValidation.TryValidateEffect(m_Effect, m_Profile, out var issues), Is.True);
-            Assert.That(ConfigurationCompiler.TryCompileEffect(m_Attributes, m_Effect, out var compiled, out issues), Is.False);
-            Assert.That(compiled, Is.Null);
-            Assert.That(issues.Any(issue => issue.Code == "MarkerRuntimeUnavailable"), Is.True);
-            AttributeSessionSetup setup = new AttributeSessionSetup
-            {
-                Catalog = m_Attributes,
-                Entities = new[] { new EntityConfiguration { EntityId = 1, Profile = m_Profile } }
-            };
-            GameObject owner = new GameObject("标记草稿测试");
-            try
-            {
-                AttributeRuntimeHost host = owner.AddComponent<AttributeRuntimeHost>();
-                Assert.That(host.TryInitialize(setup, out issues), Is.True, string.Join("\n", issues));
-                AttributeSession previous = host.Session;
-                setup.Effects = new[] { m_Effect };
-                Assert.That(host.TryInitialize(setup, out issues), Is.False);
-                Assert.That(host.Session, Is.SameAs(previous));
-                Assert.That(issues.Any(issue => issue.Code == "MarkerRuntimeUnavailable"), Is.True);
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(owner);
-            }
         }
 
         [Test]

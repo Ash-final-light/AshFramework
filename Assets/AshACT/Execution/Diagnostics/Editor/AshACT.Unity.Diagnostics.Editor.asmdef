@@ -1,0 +1,17 @@
+{
+    "name": "AshACT.Unity.Diagnostics.Editor",
+    "rootNamespace": "AshACT.Unity",
+    "references": [
+        "AshACT.Unity",
+        "AshACT.Unity.Editor",
+        "AshACT.Unity.Execution",
+        "AshACT.Unity.Diagnostics",
+        "AshACT.Attributes",
+        "AshACT.Effects",
+        "AshFramework.FixedPoint"
+    ],
+    "autoReferenced": true,
+    "includePlatforms": [
+        "Editor"
+    ]
+}

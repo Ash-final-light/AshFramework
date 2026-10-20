@@ -3,13 +3,6 @@ using UnityEngine;
 
 namespace AshACT.Unity
 {
-    [Serializable]
-    public sealed class EntityConfiguration
-    {
-        public ulong EntityId;
-        public CharacterAttributeAsset Profile;
-    }
-
     [CreateAssetMenu(menuName = "AshACT/通用属性库")]
     public sealed class AttributeCatalogAsset : VersionedConfigurationAsset
     {

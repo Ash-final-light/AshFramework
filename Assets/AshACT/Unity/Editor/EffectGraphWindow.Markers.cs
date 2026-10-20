@@ -14,13 +14,13 @@ namespace AshACT.Unity.Editor
         {
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("标记操作 · 配置草稿", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("这里只保存向独立标记系统发出的请求。运行时尚未接入：操作不会执行，含操作的效果不能编译为可运行会话。", MessageType.Warning);
+            EditorGUILayout.HelpBox("这里只编辑标记操作配置；校验检查引用、数量和执行时机，不执行标记操作。", MessageType.Warning);
             SerializedProperty catalogProperty = m_Serialized.FindProperty("MarkerCatalog");
             EditorGUILayout.PropertyField(catalogProperty, new GUIContent("标记定义库"));
             MarkerCatalogAsset catalog = catalogProperty.objectReferenceValue as MarkerCatalogAsset;
             if (m_SourcePreview != null && m_SourcePreview.MarkerCatalog != null && catalog != m_SourcePreview.MarkerCatalog)
             {
-                if (GUILayout.Button("使用施加者预览角色的标记库"))
+                if (GUILayout.Button("使用施加者配置上下文的标记库"))
                 {
                     catalogProperty.objectReferenceValue = m_SourcePreview.MarkerCatalog;
                 }
@@ -87,7 +87,7 @@ namespace AshACT.Unity.Editor
             {
                 m_Serialized.ApplyModifiedProperties();
                 m_MarkerValid = MarkerAuthoringValidation.TryValidateEffect(m_Graph, m_SourcePreview, out var issues);
-                m_MarkerValidation = m_MarkerValid ? "配置草稿有效；尚未实现标记请求执行，不能用于运行会话。" : string.Join("\n", issues);
+                m_MarkerValidation = m_MarkerValid ? "标记配置校验通过；未执行标记操作。" : string.Join("\n", issues);
                 Invalidate();
             }
 
