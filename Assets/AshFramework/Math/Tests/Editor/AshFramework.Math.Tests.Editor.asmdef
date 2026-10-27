@@ -1,0 +1,22 @@
+{
+    "name": "AshFramework.Math.Tests.Editor",
+    "rootNamespace": "AshFramework.Math.Tests",
+    "references": [
+        "AshFramework.Math",
+        "AshFramework.Math.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ]
+}
