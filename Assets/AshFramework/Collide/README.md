@@ -1,4 +1,4 @@
-# AshFramework.Collide：精筛核心与平面适配
+# AshFramework.Collide：精筛、平面适配、复合体组件与 Gizmos
 
 当前实现纯 C# 二维几何精筛。核心程序集为 `AshFramework.Collide`，只引用现有 `AshFramework.Math` 和 .NET 基础库，不引用 UnityEngine，不使用 unsafe。
 
@@ -12,8 +12,12 @@
 - 独立 EditMode 几何测试，包含固定种子的随机参考对照。
 - `CollisionPlaneProjection` 的 Project、Embed、TryGetRotation。
 - `UnityCollisionPlaneAdapter.TryReadRigidPose`，读取 Transform 世界平移和平面旋转。
+- Body/CircleShape/BoxShape 挂载组件、最近 Body 归属、复合体收集和世界几何刷新。
+- `WorldShape2D`、`CompoundShape2D` 与 `CompoundCollision2D.Overlaps`。
+- Body 单值逻辑高度 1/2/3 的保存和输入验证。
+- Editor 独立程序集的形状轮廓、子形状 AABB、Body 整体 AABB 和配置错误提示。
 
-当前不包含 Body/Shape 挂载组件、复合体收集、逻辑高度、类别过滤、碰撞世界、事件、空间划分、射线、法线/穿透深度及 Gizmos。这些后续模块可以共用本核心。
+当前不包含逻辑高度匹配、类别过滤、碰撞世界、事件、空间划分、射线及法线/穿透深度。这些后续模块可以共用本核心。
 
 ## 数据与判定约定
 
@@ -149,7 +153,120 @@ public static class CollisionPoseExample
 | --- | --- | --- |
 | Shape / Geometry / NarrowPhase | AshFramework.Collide | AshFramework.Math、.NET 基础库；无 UnityEngine |
 | UnityAdapters | AshFramework.Collide.Unity | Collide、Math、Math.Unity、UnityEngine |
-| Tests/Editor | AshFramework.Collide.Tests.Editor | 两个碰撞程序集、Math、Unity Test Framework |
+| Editor | AshFramework.Collide.Editor，仅 Editor | Collide、Collide.Unity、Math、Math.Unity、UnityEditor |
+| Tests/Editor | AshFramework.Collide.Tests.Editor | 三个碰撞程序集、Math、Unity Test Framework |
+
+## 任务 2：Body / Shape 挂载与复合体
+
+### 场景配置
+
+从 Component → AshFramework → Collide 添加 Collision Body、Circle Shape 或 Box Shape：
+
+```text
+Player                         CollisionBodyBehaviour
+├── Model                      普通表现对象
+├── BodyShape                  CircleShapeBehaviour
+└── WeaponShape                BoxShapeBehaviour
+```
+
+Body 选择 Plane（默认 XZ）和 Logical Height（Level1/2/3，对应值 1/2/3）。CircleShape 配置正半径，BoxShape 配置正半尺寸。Shape 的 Local Center 是所在物体局部平面的偏移；子 Transform 的位置、旋转和支持的缩放也参与世界几何计算。
+
+局部中心在 XY 模式映射为 `(center.x, center.y, 0)`，XZ 模式映射为 `(center.x, 0, center.y)`，再通过 Shape 的完整 localToWorldMatrix 变换。不要把 XZ 模式 Local Center 的 Y 当作世界高度。
+
+Shape 归属向上查找到的最近 Body，包括同一物体上的 Body。普通分组不形成边界；嵌套 Body 即使 disabled，仍形成独立归属边界，父 Body 不接管其形状。只收集启用且在活跃层级中的 Shape。收集顺序按 Unity 层级遍历和组件顺序；调整同级顺序只改变子形状索引，不改变拥有者。当前索引是缓存内位置，不是跨重建稳定 ID。
+
+### 收集与刷新
+
+| 入口/属性 | 行为 |
+| --- | --- |
+| RebuildShapes() | 重新收集所属启用形状，清空先前几何；下一步需要 RefreshGeometry |
+| RefreshGeometry() | 必要时重建列表，更新全部世界形状和整体 AABB；返回成功与否 |
+| ShapeCount / GetShape(index) | 最近一次收集的组件及顺序 |
+| HasGeometry | 当前未被标记失效且有成功刷新的几何 |
+| Geometry | Body 拥有的复合体缓存；无效时抛出异常 |
+| TryGetBounds(out bounds) | 无有效几何时返回 false |
+| LastError | 最近一次刷新失败原因，成功时清空 |
+| RequestRebuild() | 标记列表/配置失效，不进行场景遍历 |
+
+Body 启用时尝试刷新；Shape 启停、直接换父、参数 setter 和 Body 的直接子层级变化会请求重建。任意深层分组调整、运行时增加嵌套 Body 等操作，调用方应显式对受影响 Body 执行 RebuildShapes。
+
+**在每次检测前调用 RefreshGeometry。** 组件不运行 Update/LateUpdate 检测循环；Transform 移动、旋转和缩放不保证立即使 HasGeometry 变为 false，因此该属性不表示当前帧姿态已自动同步。未来由碰撞世界在统一模拟阶段调用刷新。
+
+Inspector 组件菜单提供 Refresh Collision Geometry，依次重建并刷新，便于手动准备数据；当前 LastError 通过 API 获取，专用 Inspector 状态面板留待后续任务。Scene 视图的配置问题提示由下述独立 Gizmos 预览提供。
+
+Geometry 是同一个可复用容器，成功刷新会更新其内容，不是不可变的历史快照；调用方应只读使用，不要直接 SetShapes/Clear 修改 Body 缓存。任一启用形状无效时，Body 整次刷新失败并清空旧几何，不会忽略该形状后继续保留一个不完整的碰撞体。空 Body 不提供有效几何。
+
+### 缩放与形状准备
+
+- Shape 及其所有祖先要求三轴 localScale 为正有限值，零缩放和负缩放不支持。
+- 世界变换后的两条平面轴必须正交并保持在所选平面中；矩形可按两轴分别烘焙正缩放，剪切组合被拒绝。
+- 圆要求两轴缩放相等。数值上采用约 `1e-5` 的相对缩放容差；容差内的微小差别取较大轴缩放，不输出椭圆。
+- Local Center、半径、半尺寸先由 Unity 输入边界量化为定点几何；极小尺寸若量化为零，或者世界形状/整体范围超出 Fix64 表示能力，刷新失败。
+- 矩形准备为 Obb2D；仅当其量化轴严格轴对齐时转为 Aabb2D，避免把外接 AABB 当作旋转矩形的真实形状。
+- 矩阵轴正交/平面误差使用明确数值容差，不能据此声称与无限精度 Unity 浮点图形完全重合。几何判定以准备后的定点形状为准。
+
+### 复合体检测
+
+WorldShape2D 通过 FromCircle/FromAabb/FromObb 创建，默认值无效；错误类型的几何访问器抛出异常。CompoundShape2D.SetShapes 复制输入，复用内部容量，先验证全部形状和整体范围再替换；失败保持原数据。Clear 清空数据和包围盒，空复合体与任何复合体不重叠。
+
+整体 AABB 覆盖全部子形状；raw 范围跨度为奇数时，向一侧保守多覆盖一个单位，且处理 Fix64 坐标边缘。如果合并范围无法由一个合法的中心/半尺寸 AABB 表示，会明确抛出溢出异常。
+
+CompoundCollision2D 先测整体 AABB，再遍历子形状对，经子 AABB 过滤后复用已有简单形状精筛。任何一对子形状相交即返回 true；两个复合体整体 AABB 相交，不代表它们的子形状必然相交。
+
+```csharp
+using AshFramework.Collide;
+using AshFramework.Collide.Unity;
+
+public static class CompoundCollisionExample
+{
+    public static bool Check(CollisionBodyBehaviour a, CollisionBodyBehaviour b)
+    {
+        if (a == null || b == null || a == b || a.Plane != b.Plane)
+        {
+            return false;
+        }
+
+        if (!a.RefreshGeometry() || !b.RefreshGeometry())
+        {
+            return false;
+        }
+
+        return CompoundCollision2D.Overlaps(a.Geometry, b.Geometry);
+    }
+}
+```
+
+示例由调用方明确传入两个不同、同平面的 Body。纯几何核心不知道 Body 身份或平面，自身几何与自身比较可以返回 true；未来世界层负责排除 Body 自配对。当前没有自动枚举 Body 或注册事件。
+
+LogicalHeight 仅保存 Level1/2/3；它不是世界 Y，也不影响当前几何检测。不同逻辑高度的两个复合体仍可能返回 true，具体玩法匹配、类别和公共过滤接口暂缓设计。
+
+## 任务 6：Scene 视图 Gizmos
+
+已保留可直接打开的 [XZ 示例场景](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideGizmosXZ.unity) 和 [XY 示例场景](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideGizmosXY.unity)，配置与查看方式见 [Samples/README](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/README.md)。
+
+开启 Scene 视图工具栏的 Gizmos。绘制由 Editor 程序集的 DrawGizmo 回调完成；可在 Gizmos 下拉列表中切换 CollisionBodyBehaviour 的显示。未选中时绘制绿色真实形状轮廓；选中 Body，或选中归属于它的内部对象后，增加以下信息：
+
+检查 XZ 时，关闭 Scene 视图的 2D 模式并切换 Top 视角；2D 模式默认沿 Z 轴观察，XZ 轮廓从侧面看会成为一条线。XY 可以直接使用 2D 视图。
+
+| 显示 | 含义 |
+| --- | --- |
+| 绿色轮廓 | Circle、AABB 或 OBB 实际准备后的定点几何 |
+| 黄色矩形 | 每个子形状的外接 AABB |
+| 青色矩形 | Body 所有形状的整体 AABB |
+| 青色文字 | 平面、逻辑高度 1/2/3、启用形状数量 |
+| 红色十字和文字 | 配置无效、空 Body，或选中的 Shape 缺少所属 Body |
+
+AABB 形状的绿色轮廓与黄色范围完全重合；整体 AABB 的部分边也可能与子形状范围重合，因此颜色可能相互覆盖。圆用 64 段闭合折线近似，仅影响显示，不改变圆形精筛。
+
+预览每次读取当前层级和 Transform，并复用 TryBuildWorldShape 及 CompoundShape2D 的几何准备/合并逻辑。OBB 顶点使用实际量化后的 AxisX/AxisY，不重新单位化；浮点转换只在 Editor 绘制边界发生。绘制前后恢复 Gizmos.color、Gizmos.matrix、Handles.color。
+
+同一 Body 的所有轮廓投影到统一显示平面：XZ 使用 Body.position.y，XY 使用 Body.position.z。子物体沿法线方向的位置差被投影掉，符合当前平面碰撞语义；逻辑高度只显示数值，不转换为世界高度或自动抬高图形。Body 变换由 Scene 工具显示，Gizmos 的世界轮廓不再乘一次父矩阵。
+
+预览容器独立于 Body.Geometry，不调用 RefreshGeometry、RebuildShapes，也不改写 Body.LastError。移动物体后，Gizmos 能显示当前配置，但运行时检测仍须显式刷新。若一个启用形状无效，则本次 Body 预览整体失败，不显示旧范围或部分有效形状；选中对象查看错误提示。禁用/不活跃 Body、禁用 Shape 及嵌套 Body 边界遵循已有规则，未归属 Body 的形状不猜测其平面。
+
+Editor 绘制会遍历层级并准备预览几何，只用于配置检查，不作为运行时更新或性能基准。Editor 程序集通过 includePlatforms 限制为 Editor，不进入 Player。
+
+Unity 回调机制参考 [DrawGizmo 官方说明](https://docs.unity3d.com/2022.3/Documentation/ScriptReference/DrawGizmo.html)。
 
 ## 验证与当前状态
 
@@ -164,4 +281,4 @@ python .codex/scripts/workflow.py verify --task editor --test-filter AshFramewor
 
 随机对照使用固定种子：矩形参考采用角点、边相交与包含；圆–矩形参考采用点包含和到边的最近距离，与生产 SAT/局部投影采用不同路径。浮点参考仅用于中等坐标的随机用例；边界及极小值使用独立的确定性标准用例。随机对照不是全输入域证明。
 
-任务 3 增加 22 项定点映射和 28 项 Unity 适配测试。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，78/78 通过，无失败或跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和限制见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。
+任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，130/130 通过，无失败或跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。

@@ -63,3 +63,67 @@
 原生界面计数为通过 78、失败 0，目标程序集全部通过；另有 86 项未选择的数学库测试未运行。测试期间临时创建的 GameObject 由 TearDown 清理，没有保存场景资源。用户误按 Escape 后重新授权继续控制，重连电脑控制会话后完成了本轮运行。
 
 当前阶段不自动读取 Transform 缩放，不处理形状烘焙、复合体或逻辑高度规则。核心数值操作与 Unity 浮点输入边界保持分离；目标平台构建、性能及完整游戏状态确定性仍待后续验证。
+
+## 任务 2：Body / Shape 与复合体
+
+在后续用户确认后新增 WorldShape2D、CompoundShape2D、CompoundCollision2D、LogicalHeight，以及 Body/CircleShape/BoxShape 组件和共享的世界几何准备逻辑。Task 3 的 TryReadRigidPose 仍只读刚体姿态；任务 2 的组件准备层单独处理支持的缩放与局部中心。
+
+- 最近 Body 归属、同物体及孙级收集、嵌套 Body 边界（包括 disabled Body）。
+- 同级顺序只影响收集索引；移动后显式刷新，深层结构变更后显式重建。
+- 正缩放、圆的均匀缩放、矩形正交轴；拒绝剪切、零/负缩放及不支持的姿态。
+- 整体 AABB 覆盖全部子形状，奇数 raw 区间向外取整；不支持的整体范围明确失败。
+- 缓存复制输入、复用容量；核心 SetShapes 验证失败保持旧数据，Body 刷新失败主动清空旧数据。
+- Body 单值逻辑高度默认为 1，仅验证 1/2/3，无高度匹配或类别过滤。
+- 没有自动检测循环、注册、事件、空间划分或 Gizmos；没有保存新的场景/Prefab。
+
+| 检查 | 结果 | 证据 |
+| --- | --- | --- |
+| AshFramework 唯一 ready Editor、工具诊断 | passed | [本轮诊断](D:/UnityProject/AshFramework/.codex/runs/20261027T133934Z-0e4e1720/report.md) |
+| 23 个 C# 源码的布局、解决方案覆盖与构建、whitespace、IDE0011 | passed | [本轮 C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261027T134035Z-8f7449b8/report.md) |
+| Editor 编译 | passed | [Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261027T133941Z-39ce4e5b/report.md)：completed、failed=false、errors=[] |
+| CLI 筛选测试 | blocked，未执行 | 同上，仍为 CLI/Pipeline 参数兼容性问题 |
+| 同项目原生 Test Runner，EditMode | passed，118/118 | [本轮原生验收](D:/UnityProject/AshFramework/.codex/runs/20261027-body-native-test-runner/report.md) |
+
+新增测试为 CompoundShapeTests 17 项、CollisionBodyBehaviourTests 23 项；连同已有 78 项共 118 项。通过 118、失败 0、目标跳过 0；另外 86 项未选择的数学库用例没有运行。所有临时测试对象由 TearDown 清理，测试不在参考项目运行。
+
+当前仅在 Windows Unity Editor 验证。未执行 Player/IL2CPP、跨平台、性能、场景配置视觉验收；后续 Gizmos 阶段再做可视化检查。原有 ProjectSettings 修改保留，未新增依赖、修改 Math、第三方代码或手改 Unity 生成工程文件。
+
+## 任务 6：形状与 AABB Gizmos
+
+已新增仅在 Editor 编译的 AshFramework.Collide.Editor 程序集，包含独立预览容器与 DrawGizmo 绘制器。运行时核心、Body/Shape 组件没有增加绘制回调或 UnityEditor 依赖。
+
+- 绿色 Circle/AABB/OBB 轮廓；选中所属 Body 或内部对象时增加黄色子 AABB、青色整体 AABB，以及平面、高度、形状数标签。
+- 圆使用 64 段闭合折线；OBB 使用实际量化轴生成四角，矩形和包围盒不重复应用 Transform 矩阵。
+- XZ 统一显示在 Body 世界 Y 平面，XY 统一显示在 Body 世界 Z 平面；逻辑高度不改变显示位置。
+- 每次预览重新读取当前层级和姿态；不改写检测缓存、列表或 LastError，失效预览不保留旧几何。
+- 最近 Body 归属、嵌套边界、禁用形状/Body 与已有几何准备规则一致。
+- 选中无效 Body 或未归属 Shape 时显示红色提示；绘制恢复共享 Gizmos/Handles 状态。
+
+| 检查 | 结果 | 证据 |
+| --- | --- | --- |
+| 规范化项目路径、唯一 ready Editor | passed | [本轮诊断](D:/UnityProject/AshFramework/.codex/runs/20261027T135000Z-e7dac313/report.md) |
+| 最终 26 个 C# 的布局、生成解决方案覆盖与构建、whitespace、IDE0011 | passed | [最终 C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261027T140509Z-33827910/report.md) |
+| 最终 Editor 编译 | passed | [Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261027T140441Z-d756b80e/report.md) |
+| CLI 筛选测试 | blocked，未启动 | 同上，CLI/Pipeline 参数兼容性问题保持单独记录 |
+| 最终源码，同项目原生 Test Runner / EditMode | passed，130/130 | [原生与视觉验收记录](D:/UnityProject/AshFramework/.codex/runs/20261027-gizmos-native-validation/report.md) |
+| 当前项目 Scene 实际绘制 | passed，限定以下范围 | 同上：XZ 顶视图及斜视图、XY、选中与未选中、无效圆缩放、标签颜色 |
+| 场景清理 | passed | [清理后场景状态](D:/UnityProject/AshFramework/.codex/runs/20261027T140609Z-f1e3a3cd/report.md)：唯一未保存场景，isDirty=false、rootCount=1 |
+
+新增 CollisionGizmoPreviewTests 12 项，包括六种形状/平面轮廓、局部中心和旋转、复合范围、层级边界、禁用对象、无效预览清除，以及不改写运行时缓存/错误信息。总数 130，通过 130、失败 0、目标跳过 0；另外 86 项未选择的数学库测试未执行。
+
+视觉检查最初尝试附加场景时，Unity 因原场景未保存而拒绝；独立 Preview Scene 未完成视觉验收，已清理。最终在原场景中使用标记 DontSave 的临时对象检查，未保存场景/Prefab，随后清理对象、恢复选择和 Scene 视图，删除辅助脚本及 meta。Console 中保留首次场景创建失败的历史错误，没有清空用户日志。删除辅助脚本后生成工程曾暂时引用旧文件，首次构建失败记录保留；经 Unity 刷新自动同步后最终构建通过，没有手改 csproj/sln。
+
+未执行 Player/IL2CPP、跨平台、运行时性能、Prefab Stage 或 PlayMode 的视觉验收；没有新增碰撞循环、过滤、注册、事件或空间划分。任务 2 的未提交修改和已有 ProjectSettings 修改保持保留。
+
+## 后续：保留 Gizmos 示例场景
+
+按用户要求，将上轮临时演示重建并通过 Unity Editor 保存为 Samples/Scenes/CollideGizmosXZ.unity 和 CollideGizmosXY.unity。每个场景包含一个 Level3 Body、局部中心偏移的圆、30° 旋转矩形、轴对齐矩形和正交相机。没有手改场景 YAML 或 meta，没有加入 Build Settings。
+
+两个场景保存后均重新打开，通过 Editor 中的实际组件验证：平面及逻辑高度正确，RefreshGeometry 成功，收集数量为 3，形状顺序为 Circle/OBB/AABB，整体 AABB 有效。当前 Editor 保留打开 XZ 场景，Body 已选中，Scene 为 Top 视角并开启 Gizmos；保存辅助脚本已移出 Assets，源码归档在忽略的执行记录中。
+
+- [场景与查看说明](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/README.md)。
+- [最终 Editor 编译及测试入口记录](D:/UnityProject/AshFramework/.codex/runs/20261027T141436Z-97d2d07e/report.md)：编译 passed，CLI 筛选测试仍为参数兼容 blocked。
+- [保存后当前场景状态](D:/UnityProject/AshFramework/.codex/runs/20261027T141520Z-ecb8a6f7/report.md)。
+- [原生创建与重新打开验证记录](D:/UnityProject/AshFramework/.codex/runs/20261027-gizmos-saved-examples/report.md)。
+
+此轮只保留示例场景和使用说明，没有修改碰撞业务 C#；未重复运行上轮已经通过的 130 项原生测试，也不把上轮结果记为本轮新测试。场景验证包含实际重新加载和 XZ 可视确认；没有执行 Player 或 PlayMode。

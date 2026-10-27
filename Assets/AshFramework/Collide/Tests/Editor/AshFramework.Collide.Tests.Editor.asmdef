@@ -4,6 +4,7 @@
     "references": [
         "AshFramework.Collide",
         "AshFramework.Collide.Unity",
+        "AshFramework.Collide.Editor",
         "AshFramework.Math"
     ],
     "includePlatforms": [

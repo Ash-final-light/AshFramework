@@ -1,0 +1,21 @@
+{
+    "name": "AshFramework.Collide.Editor",
+    "rootNamespace": "AshFramework.Collide.Editor",
+    "references": [
+        "AshFramework.Collide",
+        "AshFramework.Collide.Unity",
+        "AshFramework.Math",
+        "AshFramework.Math.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

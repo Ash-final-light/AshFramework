@@ -2,7 +2,9 @@
 
 日期：2026-10-27。
 
-本计划基于对 `D:/UnityProject/LockstepCollision/Assets/Collision2D` 实际源码的只读检查，并结合 AshFramework 当前数学库及已确认的双粗筛方向编写。方案讨论之后，用户授权先实现任务 1：当前已新增 Circle/AABB/OBB 及六种精筛配对，使用说明与执行状态见 [Collide README](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/README.md)。其余组件、过滤、世界和空间划分仍属后续任务，未运行参考项目作为本项目验收。
+本计划基于对 `D:/UnityProject/LockstepCollision/Assets/Collision2D` 实际源码的只读检查，并结合 AshFramework 当前数学库及已确认的双粗筛方向编写。方案讨论之后，已完成任务 1 精筛核心、任务 3 平面适配、任务 2 Body/Shape 挂载与复合体，以及任务 6 Gizmos，使用说明与执行状态见 [Collide README](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/README.md)。世界、事件和空间划分仍属后续任务，未运行参考项目作为本项目验收。
+
+**后续确认优先于本文早期建议：** 角色逻辑高度只保存 1/2/3 单值；高度匹配、类别及共用过滤接口暂缓，按具体玩法再确定。本文第 7.1 节的攻击高度集合属于历史可选方案，不代表当前已实现能力。当前任务 2 的几何检测不应用高度过滤。
 
 ## 1. 实施方向
 
