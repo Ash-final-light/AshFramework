@@ -1,0 +1,23 @@
+{
+    "name": "AshFramework.Collide.Tests.Editor",
+    "rootNamespace": "AshFramework.Collide.Tests",
+    "references": [
+        "AshFramework.Collide",
+        "AshFramework.Collide.Unity",
+        "AshFramework.Math"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ]
+}

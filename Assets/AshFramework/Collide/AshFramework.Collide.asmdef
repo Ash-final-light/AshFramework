@@ -1,0 +1,16 @@
+{
+    "name": "AshFramework.Collide",
+    "rootNamespace": "AshFramework.Collide",
+    "references": [
+        "AshFramework.Math"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}
