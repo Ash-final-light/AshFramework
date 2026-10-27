@@ -1,0 +1,16 @@
+{
+    "name": "AshFramework.Math.Unity",
+    "rootNamespace": "AshFramework.Math.Unity",
+    "references": [
+        "AshFramework.Math"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
