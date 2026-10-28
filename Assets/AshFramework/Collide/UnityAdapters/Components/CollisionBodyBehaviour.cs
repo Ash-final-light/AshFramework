@@ -11,6 +11,12 @@ namespace AshFramework.Collide.Unity
     public sealed class CollisionBodyBehaviour : MonoBehaviour
     {
         [SerializeField]
+        private CollisionWorldBehaviour _world;
+
+        // 实际接入的世界，用于清理旧绑定；不在 Body 上重复保存核心 ID。
+        private CollisionWorldBehaviour _boundWorld;
+
+        [SerializeField]
         private CollisionPlane _plane = CollisionPlane.XZ;
 
         [SerializeField]
@@ -25,6 +31,43 @@ namespace AshFramework.Collide.Unity
         public string LastError { get; private set; } = string.Empty;
         public int ShapeCount => _shapes.Count;
         public bool HasGeometry => _hasGeometry && !_needsRebuild && isActiveAndEnabled;
+        public CollisionWorldBehaviour World => _world;
+
+        /// <summary>主线程显式绑定；禁用对象也可绑定，换世界时旧身份立即失效。</summary>
+        public void BindWorld(CollisionWorldBehaviour world)
+        {
+            if (_boundWorld != null)
+            {
+                _boundWorld.EnsureNotStepping();
+            }
+
+            if (world != null)
+            {
+                world.EnsureNotStepping();
+            }
+
+            _world = world;
+            SynchronizeWorldBinding();
+        }
+
+        // OnValidate 只标脏；由 Inspector、生命周期或世界准备阶段在主线程协调绑定。
+        internal void SynchronizeWorldBinding()
+        {
+            if (_boundWorld != _world)
+            {
+                if (_boundWorld != null)
+                {
+                    _boundWorld.DetachBody(this);
+                }
+
+                _boundWorld = _world;
+            }
+
+            if (_boundWorld != null)
+            {
+                _boundWorld.AttachBody(this);
+            }
+        }
 
         public CollisionPlane Plane
         {
@@ -182,12 +225,27 @@ namespace AshFramework.Collide.Unity
         {
             RequestRebuild();
             RefreshGeometry();
+            SynchronizeWorldBinding();
         }
 
         private void OnDisable()
         {
             Fail("Body is disabled or inactive.");
             RequestRebuild();
+            if (_boundWorld != null)
+            {
+                _boundWorld.SuspendBody(this);
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_boundWorld != null)
+            {
+                _boundWorld.DetachBody(this);
+            }
+
+            _boundWorld = null;
         }
 
         private void OnValidate()

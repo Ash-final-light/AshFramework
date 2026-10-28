@@ -47,17 +47,28 @@
 
 ## 2. 当前源码事实
 
-**实施状态更新：** 用户后续已要求“完成第一步”。2026-10-28 第一阶段核心世界及测试已完成；不再沿用此前“仅记录、未实现核心”的时点描述。Unity 世界组件、具体算法和位置修正仍未实现，不自动提交。
+**实施状态更新：** 用户后续已要求“完成第一步”，核心已提交为 9a639d7；之后确认第二阶段“就这么做”。2026-10-28 核心及 Unity 接入均已完成。具体算法和位置修正仍未实现；第二阶段已实现，按阶段独立提交。
 
 - 已有 Circle/AABB/OBB 精筛、平面适配、Body/Shape 组件、复合体与整体 AABB、逻辑高度数据、Editor Gizmos。
 - `AshFramework.Collide` 仅引用 Math，`noEngineReferences=true`、`allowUnsafeCode=false`；Unity 适配和 Editor 各有独立程序集。
-- 已有 CollisionWorld、CollisionBodyId、CollisionPair、内部记录及 IBroadPhase2D。没有具体空间算法、事件或 Unity 世界驱动。测试 Stub 仅预设候选与模拟失败。
+- 已有 CollisionWorld、CollisionBodyId、CollisionPair、内部记录及 IBroadPhase2D，以及 CollisionWorldBehaviour 的显式 Initialize/Step、Body.BindWorld 和 Inspector 平面检查。没有具体空间算法或事件；测试 Stub 仅预设候选与模拟失败。
 - `CollisionBodyBehaviour.Geometry` 返回反复复用的可变 `CompoundShape2D`。重建、刷新失败、禁用会清空该缓存；已经取得的引用也会看到清空结果。
 - `CompoundShape2D` 有 Count、索引器、SetShapes、Clear 和新 CopyFrom；仍未实现 IReadOnlyList，世界使用 CopyFrom 复制已验证形状及缓存 AABB。
 - 移动后显式 RefreshGeometry；深层结构调整后显式 RebuildShapes。当前组件没有完整的增量几何脏标记系统。
 - Gizmos 独立读取配置，不刷新或改写 Body 检测缓存与 LastError。
 - 当前布尔精筛采用相切算相交，不读取逻辑高度。
-- 核心 Step 已按规范化 ID 对排序输出，未要求完整锁步。本轮原生碰撞测试 158/158 通过，其中世界测试 27 项和复制测试 1 项为新增；CLI 参数阻塞与原生通过分别记录。
+- 核心 Step 已按规范化 ID 对排序输出，未要求完整锁步。第一阶段原生碰撞测试 158/158；第二阶段新增 23 项，现为 181/181 通过；CLI 参数阻塞与原生通过分别记录。
+
+### 2.1 第二阶段接入细节
+
+- 世界配置统一 XY/XZ 与固定覆盖范围，绝对平面坐标不随 World Transform 移动；初始化后锁定配置。
+- Body 显式绑定，World 保存唯一的 Body → ID 映射；Body 只记录实际绑定世界以清理旧关系，不再缓存一份 ID。
+- 未初始化只存绑定，不分配假 ID。初始化发现明确绑定的场景 Body，包含禁用/未激活对象；禁用保留身份，解绑/换世界/销毁清理旧注册。
+- Step 先协调已跟踪绑定，再刷新、校验及复制全部有效几何，最后统一同步索引并查询。数据错误只暂停该 Body，索引错误整步失败。
+- 全场景发现只在初始化、显式 RefreshBindings 和检查按钮发生；每步复用遍历缓冲，尚未做完整几何脏标记优化，不宣称零 GC。
+- 运行时用 BindWorld；批量直接改写序列化字段后用 RefreshBindings。OnValidate 只标脏；Inspector 在主线程协调。没有全局静态注册表或自动检测循环。
+- World 禁用时暂停并保留身份；销毁清空独占索引。运行时状态不序列化，域重载后需重新注入。
+- 平面按钮只读且独立于初始化，包含禁用对象、明确报告零对象。按钮逻辑已测试，Inspector 外观视觉验收尚未执行。
 
 主要源码：[Body](../UnityAdapters/Components/CollisionBodyBehaviour.cs)、[复合体](../Shape/CompoundShape2D.cs)、[精筛](../NarrowPhase/CompoundCollision2D.cs)、[程序集](../AshFramework.Collide.asmdef)。
 
@@ -164,7 +175,7 @@ CollisionWorld
 ## 9. 后续继续讨论时的核对顺序
 
 1. 先读取本备忘和实际源码，确认期间是否已有实现或用户的新决定。
-2. 保持当前仅接口、无具体算法的范围，按 [核心世界代码计划](CollisionWorldCorePlan.md) 安排核心交付再接 Unity；第 1.1 节五项不再作为未定，不重新引入 Jobs 布局目标。
+2. 核心及 Unity 绑定已交付，先核对 [核心世界代码计划](CollisionWorldCorePlan.md) 与 README 的实际状态；保持当前仅接口、无具体算法的范围。第 1.1 节五项不再作为未定，不重新引入 Jobs 布局目标。
 3. 固定碰撞覆盖范围的数值留到关卡配置；越界暂停该 Body、撤下旧项并报告，索引自身错误导致本步失败。区分已确认行为与尚未确定的具体算法参数。
 4. 具体算法、事件、完整锁步和 unsafe 继续作为独立后续议题。
 5. 实现和验证均在 AshFramework 目标项目执行；历史通过记录与当次实际验证分开。

@@ -1,4 +1,4 @@
-# AshFramework.Collide：精筛、平面适配、复合体组件与 Gizmos
+# AshFramework.Collide：精筛、碰撞世界、Unity 绑定与 Gizmos
 
 当前实现纯 C# 二维几何精筛。核心程序集为 `AshFramework.Collide`，只引用现有 `AshFramework.Math` 和 .NET 基础库，不引用 UnityEngine，不使用 unsafe。
 
@@ -18,14 +18,15 @@
 - Editor 独立程序集的形状轮廓、子形状 AABB、Body 整体 AABB 和配置错误提示。
 - 接口版核心世界：世界归属 ID、注册/提交/暂停/移除、独立几何副本、统一索引同步、配对与失败恢复。
 - `IBroadPhase2D` 契约及 `CompoundShape2D.CopyFrom`；测试用预设候选 Stub 不进入正式运行路径。
+- `CollisionWorldBehaviour` 的显式初始化、固定范围、统一平面和 Step；Body 显式绑定、生命周期及 Inspector 检查按钮。
 
-当前不包含 Unity 世界组件及 Body 绑定、逻辑高度匹配、类别过滤、事件、具体空间划分算法、射线及法线/穿透深度。核心世界需要调用方提供空的、独占的索引实现，没有默认或暴力兜底。
+当前不包含逻辑高度匹配、类别过滤、事件、具体空间划分算法、射线及法线/穿透深度。核心世界需要调用方提供空的、独占的索引实现，没有默认或暴力兜底。
 
 后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。第一阶段核心已实现，仍不实现具体算法。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
 
 外部项目的世界存储、接口与缓冲设计参考见 [LightweightPhysics 源码参考审查](Ref/LightweightPhysicsReferenceReview.md)。该文同时记录与当前需求不兼容的行为及 Math128/Jobs 的验证边界，不表示已迁入实现。
 
-下一阶段安排见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：先做核心世界与测试，再接 Unity 绑定和检查按钮；采用普通 C# 容器，不以 Jobs 布局为目标。计划已考虑未来位置修正的一致性边界，本阶段不实现修正或具体空间算法。
+实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：核心和 Unity 接入均已完成，采用普通 C# 容器，不以 Jobs 布局为目标。计划已考虑未来位置修正的一致性边界，本阶段不实现修正或具体空间算法。
 
 ## 数据与判定约定
 
@@ -42,7 +43,39 @@
 - 检测中禁止修改世界或嵌套 Step；索引 Query 单次追加必须无重复且覆盖全部相交、相切候选。
 - `CopyFrom` 公开于已有可变复合体类型，复制数值和缓存 AABB，复用数组，不共享内部存储；世界记录不公开其副本引用。
 
-2026-10-28 本项目原生 EditMode 最终 158/158 通过（本轮新增 28 项），C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
+第一阶段本项目原生 EditMode 158/158 通过；第二阶段增加 23 项，现为 181/181 通过，C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
+
+### Unity 世界接入
+
+在场景添加 CollisionWorldBehaviour，在 Body 的“显式绑定世界”字段指定它，或在主线程调用 BindWorld。不会按父层级或全局单例猜测世界；父子归属规则只用于收集 Shape。
+
+| 入口 | 行为 |
+| --- | --- |
+| Configure(plane, boundsCenter, boundsHalfExtents) | 初始化前设置平面与固定绝对坐标范围；第二维对应 Y 或 Z |
+| Initialize(broadPhase) | 注入空的独占索引，只能初始化一次；发现已绑定的场景 Body，包含禁用和未激活对象 |
+| Body.BindWorld(world) | 受控绑定、解绑或转移；未初始化只记录绑定，初始化后才分配核心 ID |
+| RefreshBindings() | 批量直接改写序列化绑定字段后显式发现，包括禁用对象；不是每步全场景扫描 |
+| Step(results, out error) | 协调已跟踪绑定 → 刷新/校验/复制全部有效几何 → 核心统一同步索引并检测 |
+| TryGetBodyId(body, out id) | 只读身份查询；未初始化、未绑定时 false，不制造假 ID |
+| IsBodyActive(body)、GetBodyError(body) | 最近提交状态与暂停原因，不表示 Transform 已自动同步 |
+
+调用方提供 broadPhase、world、body 及可复用的 results：
+
+```csharp
+world.Initialize(broadPhase);
+body.BindWorld(world);
+bool success = world.Step(results, out string error);
+```
+
+- 没有 Update/FixedUpdate 自动检测。业务逻辑每步移动对象后调用 Step；静止 Body 也参与几何刷新与检测。尚未实现完整增量脏标记优化，不承诺零 GC 或具体性能。
+- Body 禁用/未激活时保留 ID 并暂停；启用后下一步重新提交。解绑、换世界或销毁使旧注册失效；索引物理移除在下一次核心 Step 完成。Unity 对从未激活对象可能不发 OnDestroy，世界准备阶段也会清理已销毁引用。
+- World 禁用时暂停全部已注册 Body，保留身份；禁用期间 Step 返回 false。重新启用后可继续显式 Step。World 销毁清空独占索引；Clear 异常会写入 Unity Console，不替外部 Dispose 其他资源。
+- 初始化后固定平面和范围。Inspector 锁定字段，Configure 拒绝修改；绕过入口改写序列化配置时 Step 失败并暂停，恢复原配置后可继续。
+- Body 平面不一致、几何无效或完整 AABB 越界，仅暂停该对象并保留 GetBodyError 原因，其余对象继续；索引失败使整步失败。返回 true 时仍应检查各 Body 状态，空结果不代表所有 Body 配置有效。
+- Body Inspector 在主线程接入字段变更及当前 Inspector 的撤销/重做；OnValidate 仍只标记几何脏状态。脚本修改应使用 BindWorld；工具批量序列化修改、未被当前 Inspector 接入的撤销/重做后可调用 RefreshBindings。
+- World Inspector 的“检查平面一致性（包含禁用 Body）”按钮独立读取显式配置，未初始化也可用；只报告不修改配置，不刷新缓存，不注册或初始化世界。无 Body 明确报告检查数量为 0。
+- 全场景发现只发生在 Initialize、显式 RefreshBindings 和 Editor 检查按钮。每步复用已跟踪绑定的遍历缓冲；既有几何准备与定点计算仍可能分配。
+- 运行时初始化状态不序列化；脚本域重载后由业务重新注入索引。当前没有算法选择器、默认索引、事件或位置修正。
 
 ### 几何数据
 
@@ -215,9 +248,9 @@ Shape 归属向上查找到的最近 Body，包括同一物体上的 Body。普�
 
 Body 启用时尝试刷新；Shape 启停、直接换父、参数 setter 和 Body 的直接子层级变化会请求重建。任意深层分组调整、运行时增加嵌套 Body 等操作，调用方应显式对受影响 Body 执行 RebuildShapes。
 
-**在每次检测前调用 RefreshGeometry。** 组件不运行 Update/LateUpdate 检测循环；Transform 移动、旋转和缩放不保证立即使 HasGeometry 变为 false，因此该属性不表示当前帧姿态已自动同步。未来由碰撞世界在统一模拟阶段调用刷新。
+**在每次检测前调用 RefreshGeometry。** 组件不运行 Update/LateUpdate 检测循环；Transform 移动、旋转和缩放不保证立即使 HasGeometry 变为 false，因此该属性不表示当前帧姿态已自动同步。使用 CollisionWorldBehaviour 时由世界 Step 统一刷新。
 
-Inspector 组件菜单提供 Refresh Collision Geometry，依次重建并刷新，便于手动准备数据；当前 LastError 通过 API 获取，专用 Inspector 状态面板留待后续任务。Scene 视图的配置问题提示由下述独立 Gizmos 预览提供。
+Inspector 组件菜单提供 Refresh Collision Geometry，依次重建并刷新，便于手动准备数据；LastError 通过 API 获取，Body Inspector 另外显示世界内 ID、最近提交状态和世界记录的暂停原因。Scene 视图的配置问题提示由下述独立 Gizmos 预览提供。
 
 Geometry 是同一个可复用容器，成功刷新会更新其内容，不是不可变的历史快照；调用方应只读使用，不要直接 SetShapes/Clear 修改 Body 缓存。任一启用形状无效时，Body 整次刷新失败并清空旧几何，不会忽略该形状后继续保留一个不完整的碰撞体。空 Body 不提供有效几何。
 
@@ -261,7 +294,7 @@ public static class CompoundCollisionExample
 }
 ```
 
-示例由调用方明确传入两个不同、同平面的 Body。纯几何核心不知道 Body 身份或平面，自身几何与自身比较可以返回 true；未来世界层负责排除 Body 自配对。当前没有自动枚举 Body 或注册事件。
+示例由调用方明确传入两个不同、同平面的 Body。纯几何核心不知道 Body 身份或平面，自身几何与自身比较可以返回 true；世界层会排除 Body 自配对。世界绑定使用上述显式入口，没有注册事件。
 
 LogicalHeight 仅保存 Level1/2/3；它不是世界 Y，也不影响当前几何检测。不同逻辑高度的两个复合体仍可能返回 true，具体玩法匹配、类别和公共过滤接口暂缓设计。
 
@@ -306,4 +339,4 @@ python .codex/scripts/workflow.py verify --task editor --test-filter AshFramewor
 
 随机对照使用固定种子：矩形参考采用角点、边相交与包含；圆–矩形参考采用点包含和到边的最近距离，与生产 SAT/局部投影采用不同路径。浮点参考仅用于中等坐标的随机用例；边界及极小值使用独立的确定性标准用例。随机对照不是全输入域证明。
 
-任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，130/130 通过，无失败或跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。
+任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试，历史合计 130 项。之后核心世界增加 28 项，Unity 世界接入增加 23 项。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，181/181 通过，无失败或目标跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。

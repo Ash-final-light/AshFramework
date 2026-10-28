@@ -2,7 +2,7 @@
 
 日期：2026-10-28。目标项目：`D:/UnityProject/AshFramework`。
 
-本文最初整理下一阶段计划；用户后续要求“完成第一步”，现已完成第 2 节核心阶段，第二阶段 Unity 接入仍未实施。已确认需求见 [讨论备忘](CollisionWorldDiscussionMemory.md)，参考结论见 [LightweightPhysics 审查](LightweightPhysicsReferenceReview.md)。本文取代旧调查中先做暴力基线、先实现具体空间索引或同步加入高度过滤/事件的近期实施顺序。
+本文最初整理下一阶段计划；用户后续要求“完成第一步”，并在核心提交后确认继续第二阶段。现已完成第 2 节核心及第 3 节 Unity 接入。已确认需求见 [讨论备忘](CollisionWorldDiscussionMemory.md)，参考结论见 [LightweightPhysics 审查](LightweightPhysicsReferenceReview.md)。本文取代旧调查中先做暴力基线、先实现具体空间索引或同步加入高度过滤/事件的近期实施顺序。
 
 **第一阶段实际状态（2026-10-28）：** 已实现接口、世界、身份/配对/记录、公开的 CompoundShape2D.CopyFrom 与测试 Stub。采用普通记录数组、ID 映射、空闲/已注册槽位列表；查询结果规范化排序；失败后 Clear 重建。另提供只读状态查询，完整公开行为见 [README](../README.md)。本项目原生 EditMode 158/158 通过，C# 构建/格式及 Editor 编译通过；CLI 测试入口参数兼容仍 blocked。证据见 [验收记录](../TASK-CHECKLIST.md)。下文签名表保留设计来源，第一阶段这些方法已存在，Unity/修正部分仍是计划。
 
@@ -119,6 +119,12 @@ flowchart TD
 - Stub 只返回预设候选、记录操作顺序并模拟失败，不实现运行时暴力或空间划分；验收的是世界流程，不是未来索引完整性或性能。
 
 ## 3. 第二阶段：Unity 绑定与检查
+
+**实际状态（2026-10-28）：已实现。** 新增 CollisionWorldBehaviour、World/Body Inspector 和只读 CollisionWorldValidation，修改 Body 显式绑定与生命周期。新增 23 项测试，本项目原生 EditMode 整个碰撞程序集 181/181 通过；C# 与 Editor 编译通过，CLI 筛选测试仍 blocked。实际公开签名和使用边界见 [README 的 Unity 世界接入](../README.md#unity-世界接入)，下列内容是本阶段的设计来源。
+
+初始化与显式 RefreshBindings 发现包括禁用对象的场景绑定；Step 只遍历已跟踪记录，不每步扫描全场景。运行时修改使用 BindWorld，绕过该入口的批量序列化修改后显式 RefreshBindings。OnValidate 不遍历场景、不修改核心世界；Body Inspector 在主线程协调字段变更。运行时初始化状态不持久化，域重载后重新注入。
+
+World 自身禁用时保留身份并暂停，Step 拒绝运行；启用后可继续。初始化后配置固定，绕过入口修改将使 Step 失败，恢复原配置后继续。销毁时清空独占索引，不 Dispose 其他资源。按钮逻辑已经测试；本轮尚未完成 Inspector 外观的人工视觉验收。
 
 第一阶段核心验证后，再新增 CollisionWorldBehaviour 和 World Inspector，修改 CollisionBodyBehaviour 的显式绑定入口。保留已有 Shape 归属、显式重建和 Gizmos 不改写检测缓存的约定。
 

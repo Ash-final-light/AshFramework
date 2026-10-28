@@ -147,3 +147,23 @@
 新增世界用例 27 项、复制用例 1 项，与既有 130 项一起运行。测试 Stub 仅返回预设候选和模拟失败，不提供运行时暴力或空索引兜底。覆盖同范围不同几何、相切、源清空不影响副本、全部同步先于查询、暂停恢复、槽位复用、多世界、重入、各索引操作错误、已经算出部分配对后失败及失败恢复。
 
 首次构建因 Unity 生成工程未同步新增文件而 blocked；用 Unity 原生 Open C# Project 自动同步后重新检查通过。原 blocked 记录保留。新 meta 由 Editor 导入生成；没有手改工程文件或场景资源，没有安装或升级依赖。原有 ProjectSettings 变更保留，不自动提交。
+
+## 第二阶段：Unity 世界绑定、生命周期与检查按钮
+
+用户在第一阶段提交 9a639d7 后确认继续。新增 CollisionWorldBehaviour、World/Body Inspector、CollisionWorldValidation 及 23 项 Unity 接入测试；Body 增加显式绑定和生命周期。继续使用既有程序集边界，核心没有新增 Unity 引用，没有具体空间算法、事件或位置修正。
+
+| 检查 | 状态 | 证据 |
+| --- | --- | --- |
+| 目标项目唯一 ready Editor | passed | [目标确认](D:/UnityProject/AshFramework/.codex/runs/20261028T091544Z-80bb1cd1/report.md) |
+| C# 布局、生成解决方案覆盖、构建及格式 | passed | [C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261028T091650Z-eaccdd9c/report.md) |
+| Editor 编译 | passed | [Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261028T091746Z-d9f90ae6/report.md) |
+| 本项目原生 Test Runner，EditMode | passed，181/181，失败 0，目标跳过 0 | [本轮原生记录](D:/UnityProject/AshFramework/.codex/runs/20261028-unity-world-native/report.md) |
+| CLI 筛选测试 | blocked，参数兼容导致未执行 | 同上 Editor 工作流，未去掉筛选器或升级依赖 |
+| Inspector 外观视觉验收 | 未执行 | 只读按钮的查找、禁用对象、零对象和缓存不变逻辑已测试 |
+| Player/IL2CPP、跨平台、性能 | 未执行 | 不作为本轮通过范围 |
+
+本轮在原生 EditMode 选中 AshFramework.Collide.Tests.Editor.dll，Run Selected 后 181 通过、0 失败，另外 86 项未选数学测试未运行。用例覆盖未初始化、两种初始化/绑定顺序、禁用/未激活序列化绑定发现、身份保持、解绑/转移、销毁清理、XY/XZ 刷新与全部同步先于查询、Body 错误暂停/恢复、索引失败恢复、World 禁用及固定配置、非法输入、显式发现和重入拒绝。
+
+初始化和显式 RefreshBindings 才全场景发现；每步复用已跟踪对象遍历缓冲，未实现完整增量脏标记优化。OnValidate 保持只标脏；运行时用 BindWorld，工具绕过入口的批量序列化修改后显式 RefreshBindings。Inspector 修改和当前 Inspector 的撤销/重做在主线程接入。没有 Update/FixedUpdate 自动检测。
+
+新 meta 由 Unity 导入生成，生成工程由 Unity Open C# Project 同步，没有手改 csproj/sln、资源或场景，没有安装/升级工具及包。既有 ProjectSettings 修改保留；本阶段独立提交，说明场景另行记录。
