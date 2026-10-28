@@ -1,0 +1,17 @@
+{
+    "name": "AshFramework.Collide.Samples",
+    "rootNamespace": "AshFramework.Collide.Samples",
+    "references": [
+        "AshFramework.Collide",
+        "AshFramework.Collide.Unity"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

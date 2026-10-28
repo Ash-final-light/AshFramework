@@ -167,3 +167,21 @@
 初始化和显式 RefreshBindings 才全场景发现；每步复用已跟踪对象遍历缓冲，未实现完整增量脏标记优化。OnValidate 保持只标脏；运行时用 BindWorld，工具绕过入口的批量序列化修改后显式 RefreshBindings。Inspector 修改和当前 Inspector 的撤销/重做在主线程接入。没有 Update/FixedUpdate 自动检测。
 
 新 meta 由 Unity 导入生成，生成工程由 Unity Open C# Project 同步，没有手改 csproj/sln、资源或场景，没有安装/升级工具及包。既有 ProjectSettings 修改保留；本阶段独立提交，说明场景另行记录。
+
+## 世界接入说明场景
+
+已通过 Editor 菜单创建并保存 Samples/Scenes/CollideWorldOverview.unity：XY 世界固定范围 X [-9, 9]、Y [-4, 4]。6 个 Body 分别说明正常复合体、不同逻辑高度的几何重叠、禁用、禁用但平面不一致、越界配置和未绑定；5 个明确绑定，其中 2 个禁用。Samples 运行时与 Editor 各有独立程序集，正式核心和适配层不引用 Samples。
+
+| 检查 | 状态 | 证据 |
+| --- | --- | --- |
+| C# 布局、构建、whitespace、IDE0011 | passed | [本轮 C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261028T094108Z-688d4fa7/report.md) |
+| Editor 编译及 CLI 筛选测试 | 编译 passed；测试 blocked，参数兼容导致未执行 | [本轮 Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261028T093956Z-bacb512c/report.md) |
+| 最终 Editor 编译状态 | up_to_date，failed=false，errors=[] | [最终查询](D:/UnityProject/AshFramework/.codex/runs/20261028T094540Z-1c95d976/report.md) |
+| 本项目原生 EditMode | passed，183/183，失败 0，目标跳过 0 | [本轮观察记录](D:/UnityProject/AshFramework/.codex/runs/20261028-world-overview-native/report.md) |
+| Scene / Inspector 视觉及操作 | 已核对 | 六例标注、固定边界、禁用标记；World 检查 5 个且报告禁用 XZ 对象 1 个；说明面板 Step 明确失败 |
+| Play/Game 面板手动操作 | 已核对，不作为自动 PlayMode 测试 | 中文说明可读；刷新几何成功 4、禁用 2、失败 0；Step 提示未初始化，退出 Play 后场景无未保存修改 |
+| Player/IL2CPP、跨平台、性能 | 未执行 | 不作为本轮验收 |
+
+场景验证新增 2 项：检查保存资产的引用/范围/禁用配置/越界及几何重叠，并验证源缓存刷新不初始化世界、Step 不伪装成功。测试只打开并关闭自己加载的场景，已有场景保持加载，恢复原活动场景；不保存测试产生的运行状态。初稿曾使用 Unity 2022 未公开提供的 OpenPreviewScene，Editor 编译发现后已改正，最终编译及原生测试通过。
+
+没有引入具体索引或测试 Stub，没有改正式世界逻辑、旧示例场景、Build Settings、第三方包或生成工程文件；新场景和 meta 均由 Editor 生成。既有 ProjectSettings 改动保留，示例场景单独提交。

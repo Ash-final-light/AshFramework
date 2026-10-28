@@ -5,6 +5,7 @@
         "AshFramework.Collide",
         "AshFramework.Collide.Unity",
         "AshFramework.Collide.Editor",
+        "AshFramework.Collide.Samples",
         "AshFramework.Math"
     ],
     "includePlatforms": [

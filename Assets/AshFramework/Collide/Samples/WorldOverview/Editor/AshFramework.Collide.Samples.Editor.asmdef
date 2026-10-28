@@ -1,0 +1,20 @@
+{
+    "name": "AshFramework.Collide.Samples.Editor",
+    "rootNamespace": "AshFramework.Collide.Samples.Editor",
+    "references": [
+        "AshFramework.Collide",
+        "AshFramework.Collide.Unity",
+        "AshFramework.Collide.Samples"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

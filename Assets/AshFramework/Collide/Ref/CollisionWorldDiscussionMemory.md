@@ -74,6 +74,8 @@
 
 ## 3. 当前接口与世界结构（第一阶段已实现）
 
+2026-10-28 用户要求搭建说明当前情况的示例，现已通过 Editor 创建并保存 `Samples/Scenes/CollideWorldOverview.unity`。配置为 XY，固定范围 X [-9, 9]、Y [-4, 4]；6 个 Body 中 5 个显式绑定，包括 2 个禁用，其中 1 个 XZ 平面不一致；另有越界及未绑定案例。没有注入任何索引。说明 Inspector/Play 面板支持手动刷新几何和尝试 Step，后者预期明确失败。World 检查按钮实际显示检查 5 个、不一致 1 个，已完成本项目视觉核对。新增场景测试 2 项，原生碰撞测试现为 183/183。查看步骤见 [Samples/README](../Samples/README.md)。
+
 ```text
 CollisionWorld
     ├── 世界内部 Body 记录、注册身份与参与检测状态

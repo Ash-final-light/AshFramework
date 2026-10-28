@@ -19,6 +19,7 @@
 - 接口版核心世界：世界归属 ID、注册/提交/暂停/移除、独立几何副本、统一索引同步、配对与失败恢复。
 - `IBroadPhase2D` 契约及 `CompoundShape2D.CopyFrom`；测试用预设候选 Stub 不进入正式运行路径。
 - `CollisionWorldBehaviour` 的显式初始化、固定范围、统一平面和 Step；Body 显式绑定、生命周期及 Inspector 检查按钮。
+- `CollideWorldOverview` 示例场景、中文说明面板与手动操作，说明无具体索引时的状态。
 
 当前不包含逻辑高度匹配、类别过滤、事件、具体空间划分算法、射线及法线/穿透深度。核心世界需要调用方提供空的、独占的索引实现，没有默认或暴力兜底。
 
@@ -43,9 +44,11 @@
 - 检测中禁止修改世界或嵌套 Step；索引 Query 单次追加必须无重复且覆盖全部相交、相切候选。
 - `CopyFrom` 公开于已有可变复合体类型，复制数值和缓存 AABB，复用数组，不共享内部存储；世界记录不公开其副本引用。
 
-第一阶段本项目原生 EditMode 158/158 通过；第二阶段增加 23 项，现为 181/181 通过，C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
+第一阶段本项目原生 EditMode 158/158 通过；第二阶段增加 23 项，示例场景再增加 2 项，现为 183/183 通过，C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
 
 ### Unity 世界接入
+
+可直接打开 [CollideWorldOverview 示例场景](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideWorldOverview.unity)，按 [示例查看步骤](Samples/README.md) 观察绑定、禁用、平面不一致、越界配置和未初始化的 Step 反馈。
 
 在场景添加 CollisionWorldBehaviour，在 Body 的“显式绑定世界”字段指定它，或在主线程调用 BindWorld。不会按父层级或全局单例猜测世界；父子归属规则只用于收集 Shape。
 
@@ -339,4 +342,4 @@ python .codex/scripts/workflow.py verify --task editor --test-filter AshFramewor
 
 随机对照使用固定种子：矩形参考采用角点、边相交与包含；圆–矩形参考采用点包含和到边的最近距离，与生产 SAT/局部投影采用不同路径。浮点参考仅用于中等坐标的随机用例；边界及极小值使用独立的确定性标准用例。随机对照不是全输入域证明。
 
-任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试，历史合计 130 项。之后核心世界增加 28 项，Unity 世界接入增加 23 项。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，181/181 通过，无失败或目标跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。
+任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试，历史合计 130 项。之后核心世界增加 28 项，Unity 世界接入增加 23 项，说明场景增加 2 项。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，183/183 通过，无失败或目标跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。
