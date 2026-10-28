@@ -16,10 +16,35 @@
 - `WorldShape2D`、`CompoundShape2D` 与 `CompoundCollision2D.Overlaps`。
 - Body 单值逻辑高度 1/2/3 的保存和输入验证。
 - Editor 独立程序集的形状轮廓、子形状 AABB、Body 整体 AABB 和配置错误提示。
+- 接口版核心世界：世界归属 ID、注册/提交/暂停/移除、独立几何副本、统一索引同步、配对与失败恢复。
+- `IBroadPhase2D` 契约及 `CompoundShape2D.CopyFrom`；测试用预设候选 Stub 不进入正式运行路径。
 
-当前不包含逻辑高度匹配、类别过滤、碰撞世界、事件、空间划分、射线及法线/穿透深度。这些后续模块可以共用本核心。
+当前不包含 Unity 世界组件及 Body 绑定、逻辑高度匹配、类别过滤、事件、具体空间划分算法、射线及法线/穿透深度。核心世界需要调用方提供空的、独占的索引实现，没有默认或暴力兜底。
+
+后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。第一阶段核心已实现，仍不实现具体算法。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
+
+外部项目的世界存储、接口与缓冲设计参考见 [LightweightPhysics 源码参考审查](Ref/LightweightPhysicsReferenceReview.md)。该文同时记录与当前需求不兼容的行为及 Math128/Jobs 的验证边界，不表示已迁入实现。
+
+下一阶段安排见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：先做核心世界与测试，再接 Unity 绑定和检查按钮；采用普通 C# 容器，不以 Jobs 布局为目标。计划已考虑未来位置修正的一致性边界，本阶段不实现修正或具体空间算法。
 
 ## 数据与判定约定
+
+### 核心世界使用约定
+
+创建 `CollisionWorld(worldBounds, broadPhase)`，通过 `RegisterBody` 取得身份；注册初始暂停。调用 `TrySubmitGeometry` 复制准备好的复合体及高度，再显式调用 `Step(results, out error)`。核心不读取 Transform，不做运动积分或位置修正。
+
+- `SuspendBody` 保留身份和容量；`UnregisterBody` 立即使旧 ID 失效，等 Step 清理索引后回收槽位。
+- ID 只在所属世界使用，槽位复用不复用 ID。`ContainsBody`、`IsBodyActive`、`TryGetBodyBounds`、`TryGetLogicalHeight`、`GetBodyError` 提供只读观察，不暴露内部可变几何。
+- 提交后 `IsBodyActive` 表示当前有效参与意图，索引在 Step 内统一同步；AABB 不变也仍更新精筛几何。
+- 空/越界几何或非法高度暂停对应对象；世界边界允许完整 AABB 恰好贴边。高度只保存，不参与过滤。
+- Step 清空调用者结果列表；返回 true 才代表本步完整结果，按规范化 ID 对排序。返回 false 时结果为空，不等于成功检测到零碰撞。
+- 索引同步/查询异常或返回未知/失效候选使整步失败；下次先 Clear 并重新插入当前有效记录。失败不回滚已提交的几何。
+- 检测中禁止修改世界或嵌套 Step；索引 Query 单次追加必须无重复且覆盖全部相交、相切候选。
+- `CopyFrom` 公开于已有可变复合体类型，复制数值和缓存 AABB，复用数组，不共享内部存储；世界记录不公开其副本引用。
+
+2026-10-28 本项目原生 EditMode 最终 158/158 通过（本轮新增 28 项），C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
+
+### 几何数据
 
 | 项目 | 约定 |
 | --- | --- |

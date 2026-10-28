@@ -135,6 +135,36 @@ namespace AshFramework.Collide.Tests
         }
 
         [Test]
+        public void CopyFromPreservesBoundsAndOwnsIndependentReusableStorage()
+        {
+            CompoundShape2D source = new CompoundShape2D();
+            source.SetShapes(new[] { Create(ShapeKind2D.Obb, 0), Circle(10, 0) });
+            CompoundShape2D copy = new CompoundShape2D();
+            copy.CopyFrom(source);
+            source.TryGetBounds(out Aabb2D expected);
+            Assert.That(copy.TryGetBounds(out Aabb2D actual), Is.True);
+            Assert.That(actual, Is.EqualTo(expected));
+            Assert.That(copy[0].Kind, Is.EqualTo(ShapeKind2D.Obb));
+            System.Reflection.FieldInfo field = typeof(CompoundShape2D).GetField("_shapes",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            object storage = field.GetValue(copy);
+            source.SetShapes(new[] { Circle(3, 0) });
+            Assert.That(copy.Count, Is.EqualTo(2));
+            copy.CopyFrom(source);
+            Assert.That(field.GetValue(copy), Is.SameAs(storage));
+            Assert.That(copy.Count, Is.EqualTo(1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => copy[1].GetBounds());
+            copy.CopyFrom(copy);
+            source.Clear();
+            Assert.That(copy[0].Circle.Center.X, Is.EqualTo(Fix64.FromInt(3)));
+            Assert.Throws<ArgumentNullException>(() => copy.CopyFrom(null));
+            Assert.That(copy.Count, Is.EqualTo(1));
+            copy.CopyFrom(source);
+            Assert.That(copy.TryGetBounds(out _), Is.False);
+            Assert.That(field.GetValue(copy), Is.SameAs(storage));
+        }
+
+        [Test]
         public void UnrepresentableWholeRangeIsRejectedWithoutChangingOldData()
         {
             CompoundShape2D compound = new CompoundShape2D();

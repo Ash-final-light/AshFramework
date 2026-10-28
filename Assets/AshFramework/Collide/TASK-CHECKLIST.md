@@ -127,3 +127,23 @@
 - [原生创建与重新打开验证记录](D:/UnityProject/AshFramework/.codex/runs/20261027-gizmos-saved-examples/report.md)。
 
 此轮只保留示例场景和使用说明，没有修改碰撞业务 C#；未重复运行上轮已经通过的 130 项原生测试，也不把上轮结果记为本轮新测试。场景验证包含实际重新加载和 XZ 可视确认；没有执行 Player 或 PlayMode。
+
+## 2026-10-28：第一阶段接口版核心世界
+
+已完成 IBroadPhase2D、带世界归属的 CollisionBodyId、规范化 CollisionPair、内部记录和 CollisionWorld；使用记录数组、ID 映射、已注册槽位列表与待回收槽位，禁用保留身份，移除使旧 ID 立即失效但等待索引清理后才复用存储。公开 CompoundShape2D.CopyFrom 复制数值与缓存 AABB，不暴露世界的可变几何。
+
+提交有效几何后，Step 统一同步全部索引再查询和精筛；最终结果排序。Body 数据错误暂停该对象，索引异常导致整步失败，下一步 Clear 重建后再查询。禁止检测中重入。没有具体空间算法、Unity 世界绑定、事件、位置修正、Jobs、unsafe 或 Math 修改。
+
+| 检查 | 状态 | 证据 |
+| --- | --- | --- |
+| 目标项目唯一 ready Editor | passed | [最终目标确认](D:/UnityProject/AshFramework/.codex/runs/20261028T072408Z-d7784f62/report.md) |
+| C# 布局、生成解决方案覆盖与构建、whitespace、IDE0011 | passed | [最终 C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261028T072109Z-d64af993/report.md) |
+| 最终 Editor 编译 | passed，completed/failed=false/errors=[] | [编译查询](D:/UnityProject/AshFramework/.codex/runs/20261028T072423Z-b6739428/report.md) |
+| 目标用例发现 | passed，EditMode 158，Explicit 0 | [发现结果](D:/UnityProject/AshFramework/.codex/runs/20261028T072419Z-688b45c9/report.md) |
+| 本项目原生 Test Runner | passed，158/158，失败 0，目标跳过 0 | [原生验收记录](D:/UnityProject/AshFramework/.codex/runs/20261028-core-world-native/report.md) |
+| CLI 筛选测试 | blocked，参数兼容导致未执行 | [Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261028T071723Z-a7ace6c5/report.md) |
+| Player/IL2CPP、跨平台、性能、第二阶段 Unity 行为 | 未执行 | 不属于本轮验收 |
+
+新增世界用例 27 项、复制用例 1 项，与既有 130 项一起运行。测试 Stub 仅返回预设候选和模拟失败，不提供运行时暴力或空索引兜底。覆盖同范围不同几何、相切、源清空不影响副本、全部同步先于查询、暂停恢复、槽位复用、多世界、重入、各索引操作错误、已经算出部分配对后失败及失败恢复。
+
+首次构建因 Unity 生成工程未同步新增文件而 blocked；用 Unity 原生 Open C# Project 自动同步后重新检查通过。原 blocked 记录保留。新 meta 由 Editor 导入生成；没有手改工程文件或场景资源，没有安装或升级依赖。原有 ProjectSettings 变更保留，不自动提交。

@@ -84,6 +84,37 @@ namespace AshFramework.Collide
             return Count > 0;
         }
 
+        /// <summary>
+        /// 复制同类容器已验证的形状与缓存范围，复用容量，不重新合并 AABB。
+        /// 不共享可写数组；复制期间源不得被修改。空源清空目标，自身复制不变。
+        /// </summary>
+        public void CopyFrom(CompoundShape2D source)
+        {
+            if (source == null)
+            {
+                throw new ArgumentNullException(nameof(source));
+            }
+
+            if (ReferenceEquals(this, source))
+            {
+                return;
+            }
+
+            if (_shapes.Length < source.Count)
+            {
+                _shapes = new WorldShape2D[source.Count];
+            }
+
+            Array.Copy(source._shapes, _shapes, source.Count);
+            if (Count > source.Count)
+            {
+                Array.Clear(_shapes, source.Count, Count - source.Count);
+            }
+
+            Count = source.Count;
+            _bounds = source._bounds;
+        }
+
         public void Clear()
         {
             Array.Clear(_shapes, 0, Count);
