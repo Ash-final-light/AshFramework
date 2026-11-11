@@ -2,6 +2,10 @@
 
 日期：2026-10-28。目标项目：`D:/UnityProject/AshFramework`。
 
+**后续范围更新：** 接口、Unity 接入及说明场景已提交后，用户确认实现首个均匀网格并接入示例。新增 UniformGridBroadPhase2D，保持 IBroadPhase2D 不变；固定范围格子表、完整 AABB 跨格登记、逐项更新/移除、代理去重代数和桶复用。示例 Start 显式注入，Step 仍手动触发，并显示碰撞对、ID 和暂停原因。后文“只接接口”属于前两阶段的历史范围，当前以本段和 README 为准；位置修正仍未实施。
+
+本阶段新增 26 项测试，最终原生碰撞程序集 209/209 通过，失败和目标跳过均为 0；全模块 C# 构建与格式、Editor 编译通过，CLI 筛选测试因参数兼容 blocked。Play 中实际验证移动/还原和禁用/启用产生 1/0/1 配对变化且 ID 不变。详细证据及未执行范围见 [验收清单](../TASK-CHECKLIST.md)。本阶段没有自动提交。
+
 本文最初整理下一阶段计划；用户后续要求“完成第一步”，并在核心提交后确认继续第二阶段。现已完成第 2 节核心及第 3 节 Unity 接入。已确认需求见 [讨论备忘](CollisionWorldDiscussionMemory.md)，参考结论见 [LightweightPhysics 审查](LightweightPhysicsReferenceReview.md)。本文取代旧调查中先做暴力基线、先实现具体空间索引或同步加入高度过滤/事件的近期实施顺序。
 
 **第一阶段实际状态（2026-10-28）：** 已实现接口、世界、身份/配对/记录、公开的 CompoundShape2D.CopyFrom 与测试 Stub。采用普通记录数组、ID 映射、空闲/已注册槽位列表；查询结果规范化排序；失败后 Clear 重建。另提供只读状态查询，完整公开行为见 [README](../README.md)。本项目原生 EditMode 158/158 通过，C# 构建/格式及 Editor 编译通过；CLI 测试入口参数兼容仍 blocked。证据见 [验收记录](../TASK-CHECKLIST.md)。下文签名表保留设计来源，第一阶段这些方法已存在，Unity/修正部分仍是计划。

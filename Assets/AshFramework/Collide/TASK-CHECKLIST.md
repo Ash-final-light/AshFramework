@@ -185,3 +185,29 @@
 场景验证新增 2 项：检查保存资产的引用/范围/禁用配置/越界及几何重叠，并验证源缓存刷新不初始化世界、Step 不伪装成功。测试只打开并关闭自己加载的场景，已有场景保持加载，恢复原活动场景；不保存测试产生的运行状态。初稿曾使用 Unity 2022 未公开提供的 OpenPreviewScene，Editor 编译发现后已改正，最终编译及原生测试通过。
 
 没有引入具体索引或测试 Stub，没有改正式世界逻辑、旧示例场景、Build Settings、第三方包或生成工程文件；新场景和 meta 均由 Editor 生成。既有 ProjectSettings 改动保留，示例场景单独提交。
+
+## 2026-10-28：首个均匀网格与真实检测示例
+
+用户确认实施均匀网格后，新增纯核心 UniformGridBroadPhase2D，实现既有 IBroadPhase2D，不改 World/Body 的算法依赖。固定范围格子表按世界最小角对齐；完整 AABB 跨格登记，逐项维护共享/新增/移除格，闭区间相切和世界外查询，代理查询代数去重及回绕处理，空桶与结果缓冲复用。默认格子上限 65536，可显式调整；非法范围或超限明确拒绝，不截断或暴力回退。
+
+Insert/Update 先校验并准备目标桶容量，再发布逻辑登记；失败准备可留下空桶或已增长容量，不改变 Body 登记。无强制 OOM 注入测试，不把参数失败测试描述为全部内存故障已验证。固定格子表与桶池引用容量随格子数增长，大范围对象仍需遍历全部覆盖格；未做性能基准，不宣称零 GC 或固定更新成本。
+
+示例 Start 显式创建和注入网格，保留手动 Step；Inspector 支持编辑状态初始化及 Step，Play 中可移动/还原、禁用/启用 B，并显示真实碰撞对、Body ID 和暂停原因。Scene 初始化后显示网格与上次成功检测配对连线；过密内部线仅作绘制裁剪。示例格子边长 2，9 列 × 4 行，只作为演示配置。
+
+场景更新通过 Editor 菜单执行，仅调整六例说明与格子边长配置，保留原有引用、位置和形状；没有手改 YAML 或 meta。场景测试允许用户在 Inspector 手动初始化的状态；未初始化 Step 失败由独立临时对象测试验证，避免操作用户正在查看的运行状态。
+
+| 检查 | 状态 | 证据 |
+| --- | --- | --- |
+| 规范化项目路径、唯一 ready Editor | passed | [最终 Editor 工作流](D:/UnityProject/AshFramework/.codex/runs/20261028T120057Z-615c1015/report.md) |
+| Collide 全目录 C# 布局、生成解决方案覆盖、构建、whitespace、IDE0011 | passed | [最终 C# 验证](D:/UnityProject/AshFramework/.codex/runs/20261028T120245Z-b91b1888/report.md) |
+| Editor 编译 | passed，completed/failed=false/errors=[] | 同上 Editor 工作流；后续仅调整测试代码后，原生 Test Runner 已编译并执行最终版本 |
+| CLI 筛选测试 | blocked，参数兼容导致未启动 | 同上 Editor 工作流，未去掉筛选器、升级依赖或改第三方代码 |
+| 本项目原生 EditMode 碰撞程序集 | passed，209/209，失败 0、目标跳过 0 | [最终原生与 Play 操作记录](D:/UnityProject/AshFramework/.codex/runs/20261028-uniform-grid-native/report.md) |
+| Play / Scene 手动操作 | 已核对 | A/B 1 对 → 移开 0 对 → 还原 1 对；禁用 0 对 → 启用 1 对，B 保持 ID；越界暂停、未绑定无此世界 ID；网格与配对线可见 |
+| Player/IL2CPP、跨平台、性能基准、自动 PlayMode 测试 | 未执行 | 不作为本轮通过范围 |
+
+新增 UniformGridBroadPhase2DTests 19 项及 UniformGridWorldBehaviourTests 7 项，与原有 183 项一并运行。覆盖配置边界、跨全部格子的大对象、负坐标、不可整除范围、内部边界与世界边界相切、极值原始整数距离、列表追加、更新移动/扩缩/同格变化、非法输入保持旧状态、移除/Clear/复用、多世界同值 ID、去重代数回绕、固定种子 240 次变更及独立闭区间查询参考对照，以及实际世界配对、禁用恢复、平面/越界错误恢复、销毁清理和失败结果清除。原生发现总数 295，本轮选择碰撞程序集 209，另外 86 项数学测试未选择、未执行。
+
+本轮中途 Pipeline 曾出现主线程超时，保留两份 failed 记录 [114651](D:/UnityProject/AshFramework/.codex/runs/20261028T114651Z-078e4fb7/report.md)、[114831](D:/UnityProject/AshFramework/.codex/runs/20261028T114831Z-674a7ceb/report.md)。后续 Play 域重载后，最终 Editor 工作流的目标及编译检查恢复通过；CLI 测试参数兼容仍单独 blocked。Console 历史超时日志没有清空，不将其冒充当前 C# 编译错误或删除失败证据。
+
+没有修改 Math、正式 World/Body、旧形状示例、Build Settings 或第三方包，没有安装/升级工具；没有加入 Jobs、unsafe、高度/类别过滤、事件、位置修正或自动检测循环。原有 ProjectSettings 修改保留。本阶段代码、场景和文档尚未提交。

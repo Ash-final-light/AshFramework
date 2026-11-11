@@ -3,7 +3,9 @@
     "rootNamespace": "AshFramework.Collide.Samples",
     "references": [
         "AshFramework.Collide",
-        "AshFramework.Collide.Unity"
+        "AshFramework.Collide.Unity",
+        "AshFramework.Math",
+        "AshFramework.Math.Unity"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

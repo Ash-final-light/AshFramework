@@ -61,12 +61,11 @@ namespace AshFramework.Collide.Tests
             Assert.That(world.Plane, Is.EqualTo(CollisionPlane.XY));
             Assert.That(world.BoundsCenter, Is.EqualTo(UnityEngine.Vector2.zero));
             Assert.That(world.BoundsHalfExtents, Is.EqualTo(new UnityEngine.Vector2(9, 4)));
-            Assert.That(world.IsInitialized, Is.False);
             Assert.That(_overview.CaseCount, Is.EqualTo(6));
             for (int i = 0; i < 5; i++)
             {
                 Assert.That(_overview.GetCase(i).Body.World, Is.SameAs(world));
-                Assert.That(world.TryGetBodyId(_overview.GetCase(i).Body, out _), Is.False);
+                Assert.That(world.TryGetBodyId(_overview.GetCase(i).Body, out _), Is.EqualTo(world.IsInitialized));
             }
 
             Assert.That(_overview.GetCase(5).Body.World, Is.Null);
@@ -83,8 +82,9 @@ namespace AshFramework.Collide.Tests
         }
 
         [Test]
-        public void ExampleRefreshDoesNotInitializeWorldAndStepReportsFailure()
+        public void ExampleRefreshPreservesWorldInitializationAndSourceOverlap()
         {
+            bool initialized = _overview.World.IsInitialized;
             _overview.RefreshExampleGeometry();
             CollisionBodyBehaviour a = _overview.GetCase(0).Body;
             CollisionBodyBehaviour b = _overview.GetCase(1).Body;
@@ -92,10 +92,7 @@ namespace AshFramework.Collide.Tests
             Assert.That(CompoundCollision2D.Overlaps(a.Geometry, b.Geometry), Is.True);
             Assert.That(a.LogicalHeight, Is.EqualTo(LogicalHeight.Level1));
             Assert.That(b.LogicalHeight, Is.EqualTo(LogicalHeight.Level3));
-            Assert.That(_overview.AttemptStep(), Is.False);
-            Assert.That(_overview.StepMessage, Does.Contain("not initialized"));
-            Assert.That(_overview.World.IsInitialized, Is.False);
-            Assert.That(_overview.World.TryGetBodyId(a, out _), Is.False);
+            Assert.That(_overview.World.IsInitialized, Is.EqualTo(initialized));
         }
     }
 }

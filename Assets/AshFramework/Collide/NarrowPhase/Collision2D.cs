@@ -1,8 +1,7 @@
 namespace AshFramework.Collide
 {
     /// <summary>
-    /// 纯二维布尔精筛。相切算相交；所有入口拒绝 default 形状。
-    /// 包含六种无序配对及三个反向重载，不生成法线、穿透深度或事件。
+    /// 纯二维精筛，提供布尔重叠与接触方向和深度。相切算相交；所有入口拒绝 default 形状。
     /// </summary>
     public static class Collision2D
     {
@@ -61,6 +60,81 @@ namespace AshFramework.Collide
             a.Validate();
             b.Validate();
             return GeometryPredicates.Boxes(new BoxData(a), new BoxData(b));
+        }
+
+        public static bool TryGetContact(Circle2D a, Circle2D b, out Contact2D contact)
+        {
+            a.Validate();
+            b.Validate();
+            return ContactGeometry2D.CircleCircle(a, b, out contact);
+        }
+
+        public static bool TryGetContact(Circle2D circle, Aabb2D box, out Contact2D contact)
+        {
+            circle.Validate();
+            box.Validate();
+            return ContactGeometry2D.CircleBox(circle, new BoxData(box), out contact);
+        }
+
+        public static bool TryGetContact(Aabb2D box, Circle2D circle, out Contact2D contact)
+        {
+            if (!TryGetContact(circle, box, out contact))
+            {
+                return false;
+            }
+
+            contact = contact.Reversed();
+            return true;
+        }
+
+        public static bool TryGetContact(Circle2D circle, Obb2D box, out Contact2D contact)
+        {
+            circle.Validate();
+            box.Validate();
+            return ContactGeometry2D.CircleBox(circle, new BoxData(box), out contact);
+        }
+
+        public static bool TryGetContact(Obb2D box, Circle2D circle, out Contact2D contact)
+        {
+            if (!TryGetContact(circle, box, out contact))
+            {
+                return false;
+            }
+
+            contact = contact.Reversed();
+            return true;
+        }
+
+        public static bool TryGetContact(Aabb2D a, Aabb2D b, out Contact2D contact)
+        {
+            a.Validate();
+            b.Validate();
+            return ContactGeometry2D.AabbAabb(a, b, out contact);
+        }
+
+        public static bool TryGetContact(Aabb2D aabb, Obb2D obb, out Contact2D contact)
+        {
+            aabb.Validate();
+            obb.Validate();
+            return ContactGeometry2D.Boxes(new BoxData(aabb), new BoxData(obb), out contact);
+        }
+
+        public static bool TryGetContact(Obb2D obb, Aabb2D aabb, out Contact2D contact)
+        {
+            if (!TryGetContact(aabb, obb, out contact))
+            {
+                return false;
+            }
+
+            contact = contact.Reversed();
+            return true;
+        }
+
+        public static bool TryGetContact(Obb2D a, Obb2D b, out Contact2D contact)
+        {
+            a.Validate();
+            b.Validate();
+            return ContactGeometry2D.Boxes(new BoxData(a), new BoxData(b), out contact);
         }
     }
 }

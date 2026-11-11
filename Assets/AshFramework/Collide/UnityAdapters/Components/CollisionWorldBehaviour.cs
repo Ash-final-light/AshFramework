@@ -47,7 +47,11 @@ namespace AshFramework.Collide.Unity
         public Vector2 BoundsCenter => _boundsCenter;
         public Vector2 BoundsHalfExtents => _boundsHalfExtents;
         public int BoundBodyCount => _bodies.Count;
-        public string LastError { get; private set; } = string.Empty;
+        public string LastError
+        {
+            get;
+            private set;
+        } = string.Empty;
 
         /// <summary>初始化前配置固定范围；Vector2 的第二维分别对应 Y 或 Z。</summary>
         public void Configure(CollisionPlane plane, Vector2 boundsCenter, Vector2 boundsHalfExtents)
@@ -136,6 +140,22 @@ namespace AshFramework.Collide.Unity
         /// <summary>先准备所有对象，再统一同步索引及检测；失败时结果为空。Body 数据错误不终止其他对象。</summary>
         public bool Step(List<CollisionPair> results, out string error)
         {
+            return StepInternal(results, null, out error);
+        }
+
+        /// <summary>同步 Unity 几何后同时输出 Body 对和子形状接触。</summary>
+        public bool Step(List<CollisionPair> results, List<CollisionContact> contacts, out string error)
+        {
+            if (contacts == null)
+            {
+                throw new ArgumentNullException(nameof(contacts));
+            }
+
+            return StepInternal(results, contacts, out error);
+        }
+
+        private bool StepInternal(List<CollisionPair> results, List<CollisionContact> contacts, out string error)
+        {
             if (results == null)
             {
                 throw new ArgumentNullException(nameof(results));
@@ -143,6 +163,7 @@ namespace AshFramework.Collide.Unity
 
             EnsureNotStepping();
             results.Clear();
+            contacts?.Clear();
             ReconcileTrackedBodies();
             if (!IsInitialized)
             {
@@ -169,7 +190,7 @@ namespace AshFramework.Collide.Unity
                     PrepareBody(entry.Key, entry.Value);
                 }
 
-                bool success = _core.Step(results, out error);
+                bool success = contacts == null ? _core.Step(results, out error) : _core.Step(results, contacts, out error);
                 LastError = error;
                 return success;
             }

@@ -2,6 +2,8 @@
 
 审查日期：2026-10-28。目标项目：`D:/UnityProject/AshFramework`。
 
+**实施更新：** 用户后续确认首个均匀网格阶段，AshFramework 已按自身 IBroadPhase2D 重新实现 UniformGridBroadPhase2D。吸收完整 AABB 跨格登记、桶列表复用和查询代数去重；使用固定范围格子表，代理保留格子范围，提供逐项 Insert/Update/Remove。没有复制参考模块的全量 Build、完整 Body 数组依赖、双静态/休眠过滤、暴力回退或精筛边界规则。本文下方“本阶段只定义接口”的描述保留原审查时点；实际当前状态以 README/TASK-CHECKLIST 为准。
+
 参考目录：`D:/UnityProject/TapTap_GameJam/Assets/Framework/Physics/LightweightPhysics`。另读取其依赖 `Assets/Framework/Physics/FixedPoint` 的部分源码。
 
 本文记录只读源码审查结论，供碰撞世界、数据存储和空间索引接口设计参考。没有迁入实现，没有运行参考项目的构建、测试、Burst 编译或性能测量；参考项目不能作为 AshFramework 的验收结果。文中“建议”不自动成为用户确认或实施授权。最新需求以 [碰撞世界讨论备忘](CollisionWorldDiscussionMemory.md) 及用户后续指令为准。

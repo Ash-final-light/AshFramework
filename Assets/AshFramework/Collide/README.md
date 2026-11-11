@@ -14,20 +14,22 @@
 - `UnityCollisionPlaneAdapter.TryReadRigidPose`，读取 Transform 世界平移和平面旋转。
 - Body/CircleShape/BoxShape 挂载组件、最近 Body 归属、复合体收集和世界几何刷新。
 - `WorldShape2D`、`CompoundShape2D` 与 `CompoundCollision2D.Overlaps`。
+- `Collision2D.TryGetContact` 计算基础形状接触；`CompoundCollision2D.CollectContacts` 收集命中的子形状对，世界 Step 可按需输出接触。
 - Body 单值逻辑高度 1/2/3 的保存和输入验证。
 - Editor 独立程序集的形状轮廓、子形状 AABB、Body 整体 AABB 和配置错误提示。
 - 接口版核心世界：世界归属 ID、注册/提交/暂停/移除、独立几何副本、统一索引同步、配对与失败恢复。
 - `IBroadPhase2D` 契约及 `CompoundShape2D.CopyFrom`；测试用预设候选 Stub 不进入正式运行路径。
 - `CollisionWorldBehaviour` 的显式初始化、固定范围、统一平面和 Step；Body 显式绑定、生命周期及 Inspector 检查按钮。
-- `CollideWorldOverview` 示例场景、中文说明面板与手动操作，说明无具体索引时的状态。
+- `UniformGridBroadPhase2D` 固定范围均匀网格，逐项插入/更新/移除、跨格去重和桶容量复用。
+- `CollideWorldOverview` 示例场景显式注入网格，展示真实碰撞对、Body ID、暂停原因与手动操作。
 
-当前不包含逻辑高度匹配、类别过滤、事件、具体空间划分算法、射线及法线/穿透深度。核心世界需要调用方提供空的、独占的索引实现，没有默认或暴力兜底。
+当前不包含逻辑高度匹配、类别过滤、事件、射线或位置修正。核心世界仍需要调用方提供空的、独占的索引实现，没有默认或暴力兜底；均匀网格是可显式选择的首个实现。
 
-后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。第一阶段核心已实现，仍不实现具体算法。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
+后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。用户在接口及 Unity 接入阶段完成后，确认继续均匀网格实现与示例接入，已扩展此前“仅接口”的阶段范围。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
 
 外部项目的世界存储、接口与缓冲设计参考见 [LightweightPhysics 源码参考审查](Ref/LightweightPhysicsReferenceReview.md)。该文同时记录与当前需求不兼容的行为及 Math128/Jobs 的验证边界，不表示已迁入实现。
 
-实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：核心和 Unity 接入均已完成，采用普通 C# 容器，不以 Jobs 布局为目标。计划已考虑未来位置修正的一致性边界，本阶段不实现修正或具体空间算法。
+实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：核心、Unity 接入及首个均匀网格均已实现，采用普通 C# 容器。位置修正仍留待后续阶段。
 
 ## 数据与判定约定
 
@@ -40,15 +42,30 @@
 - 提交后 `IsBodyActive` 表示当前有效参与意图，索引在 Step 内统一同步；AABB 不变也仍更新精筛几何。
 - 空/越界几何或非法高度暂停对应对象；世界边界允许完整 AABB 恰好贴边。高度只保存，不参与过滤。
 - Step 清空调用者结果列表；返回 true 才代表本步完整结果，按规范化 ID 对排序。返回 false 时结果为空，不等于成功检测到零碰撞。
+- 核心和 Unity 世界都可调用 `Step(pairs, contacts, out error)`。每个命中的 Body 对只出现一次，每个命中的子形状对各有一条接触。接触按 Body 对、A 子形状索引、B 子形状索引排序，索引对应本次提交的形状顺序。只移动 B 时沿法线，移动 A 时沿反向。失败时两个列表均为空。
 - 索引同步/查询异常或返回未知/失效候选使整步失败；下次先 Clear 并重新插入当前有效记录。失败不回滚已提交的几何。
 - 检测中禁止修改世界或嵌套 Step；索引 Query 单次追加必须无重复且覆盖全部相交、相切候选。
 - `CopyFrom` 公开于已有可变复合体类型，复制数值和缓存 AABB，复用数组，不共享内部存储；世界记录不公开其副本引用。
 
-第一阶段本项目原生 EditMode 158/158 通过；第二阶段增加 23 项，示例场景再增加 2 项，现为 183/183 通过，C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。这些测试不验证具体空间算法、性能或 Player。
+第一阶段本项目原生 EditMode 158/158 通过；Unity 接入与说明场景增加 25 项，均匀网格及实际接入再增加 26 项，现为 209/209 通过，C# 构建/格式与 Editor 编译通过。CLI 测试参数兼容仍 blocked，原生通过单独记录；详见 [验收清单](TASK-CHECKLIST.md)。测试包含网格边界、跨格去重、更新/移除和随机查询参考对照，不作为性能或 Player 验证。
 
 ### Unity 世界接入
 
-可直接打开 [CollideWorldOverview 示例场景](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideWorldOverview.unity)，按 [示例查看步骤](Samples/README.md) 观察绑定、禁用、平面不一致、越界配置和未初始化的 Step 反馈。
+可直接打开 [CollideWorldOverview 示例场景](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideWorldOverview.unity)，按 [示例查看步骤](Samples/README.md) 初始化网格并手动 Step，观察真实碰撞对、稳定 ID、禁用、平面不一致和越界暂停原因。
+
+### 均匀网格实现
+
+创建 `UniformGridBroadPhase2D(worldBounds, cellSize, maxCellCount)` 后注入世界。范围使用同一份固定 AABB，cellSize 为正 Fix64；maxCellCount 默认 65536，可显式调整。配置超限或非法直接报错，不改变格子尺寸、不截断大物体范围，也不回退暴力。
+
+- 使用固定格子表，按覆盖范围最小角对齐；最后一行/列可以小于格子边长。格子坐标直接由定点原始整数距离计算，支持负坐标及跨越有符号长整数差值上限的合法范围。
+- 每个 Body 的整体 AABB 覆盖哪些格子，就登记到全部这些格子；内部代理保留覆盖格子矩形，更新时保留共有格、增加新格并移除旧格。
+- Query 可部分或完全在覆盖范围之外；只遍历与世界相交的格子，并按闭区间 AABB 过滤。世界最大边界归最后一格，相切会被返回。
+- 去重代数保存在内部代理上，回绕时重置；不按裸 ID 数值去重，不改变调用方列表原有顺序或内容，仅追加本次去重结果。最终碰撞对排序继续由世界负责。
+- Insert/Update 在修改登记前完成 ID/范围校验和目标桶容量准备，正常提交阶段不再扩容；准备失败可能保留空桶或增长容量，但不改变原有 Body 逻辑登记。
+- 空桶归还池，Clear 清空代理及结果但保留桶容量。该实现预分配格子表和桶池引用容量，内存随格子数增长；大范围 Body 仍需遍历全部覆盖格，不承诺固定成本或零 GC。
+- 参考 LightweightPhysics 的跨格登记、桶复用及查询去重，按本项目接口重新实现，不引入其全量 Build、完整 Body 数组依赖、静态/休眠过滤或小数量暴力回退。
+
+### Unity 入口与生命周期
 
 在场景添加 CollisionWorldBehaviour，在 Body 的“显式绑定世界”字段指定它，或在主线程调用 BindWorld。不会按父层级或全局单例猜测世界；父子归属规则只用于收集 Shape。
 
@@ -342,4 +359,4 @@ python .codex/scripts/workflow.py verify --task editor --test-filter AshFramewor
 
 随机对照使用固定种子：矩形参考采用角点、边相交与包含；圆–矩形参考采用点包含和到边的最近距离，与生产 SAT/局部投影采用不同路径。浮点参考仅用于中等坐标的随机用例；边界及极小值使用独立的确定性标准用例。随机对照不是全输入域证明。
 
-任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试，历史合计 130 项。之后核心世界增加 28 项，Unity 世界接入增加 23 项，说明场景增加 2 项。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，183/183 通过，无失败或目标跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。
+任务 3 增加 22 项定点映射和 28 项 Unity 适配测试；任务 2 增加 17 项复合体和 23 项组件测试；任务 6 增加 12 项预览测试，历史合计 130 项。之后核心世界增加 28 项，Unity 世界接入增加 23 项，说明场景增加 2 项，均匀网格增加 19 项、实际网格接入增加 7 项。本轮在 AshFramework 的 Unity 原生 Test Runner 中重新运行整个碰撞测试程序集，209/209 通过，无失败或目标跳过；C# 构建、格式和 Editor 编译也已通过。执行结果和视觉验收范围见 [TASK-CHECKLIST.md](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/TASK-CHECKLIST.md)。CLI 测试参数兼容性仍为 blocked，与原生界面的实际通过结果分别记录。

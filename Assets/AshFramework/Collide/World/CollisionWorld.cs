@@ -38,6 +38,8 @@ namespace AshFramework.Collide
 
         /// <summary>本步精筛命中的规范化配对缓冲；全部检测成功并排序后才复制给调用方。</summary>
         private readonly List<CollisionPair> _pairs = new List<CollisionPair>();
+        private readonly List<CompoundContact2D> _compoundContacts = new List<CompoundContact2D>();
+        private readonly List<CollisionContact> _contacts = new List<CollisionContact>();
 
         /// <summary>内部记录引用数组，按需扩容；数组下标是可复用的槽位，不是 Body ID。</summary>
         private CollisionBodyRecord[] _slots = new CollisionBodyRecord[16];
@@ -196,6 +198,24 @@ namespace AshFramework.Collide
         /// </summary>
         public bool Step(List<CollisionPair> results, out string error)
         {
+            return StepInternal(results, null, out error);
+        }
+
+        /// <summary>
+        /// 同时输出 Body 对和全部子形状接触，按 Body 对及两个子形状索引排序。失败时两个列表为空。
+        /// </summary>
+        public bool Step(List<CollisionPair> results, List<CollisionContact> contacts, out string error)
+        {
+            if (contacts == null)
+            {
+                throw new ArgumentNullException(nameof(contacts));
+            }
+
+            return StepInternal(results, contacts, out error);
+        }
+
+        private bool StepInternal(List<CollisionPair> results, List<CollisionContact> contacts, out string error)
+        {
             EnsureNotStepping();
             if (results == null)
             {
@@ -203,6 +223,7 @@ namespace AshFramework.Collide
             }
 
             results.Clear();
+            contacts?.Clear();
             _pairs.Clear();
             _stepping = true;
             try
@@ -233,14 +254,27 @@ namespace AshFramework.Collide
                             continue;
                         }
 
-                        if (CompoundCollision2D.Overlaps(a.Geometry, b.Geometry))
+                        if (contacts == null)
                         {
-                            _pairs.Add(new CollisionPair(a.Id, id));
+                            if (CompoundCollision2D.Overlaps(a.Geometry, b.Geometry))
+                            {
+                                _pairs.Add(new CollisionPair(a.Id, id));
+                            }
+                        }
+                        else
+                        {
+                            CollectPairContacts(a, b);
                         }
                     }
                 }
 
                 _pairs.Sort();
+                if (contacts != null)
+                {
+                    _contacts.Sort(CompareContacts);
+                    contacts.AddRange(_contacts);
+                }
+
                 results.AddRange(_pairs);
                 error = string.Empty;
                 return true;
@@ -249,6 +283,7 @@ namespace AshFramework.Collide
             {
                 _needsRebuild = true;
                 results.Clear();
+                contacts?.Clear();
                 error = exception.Message;
                 return false;
             }
@@ -256,8 +291,38 @@ namespace AshFramework.Collide
             {
                 _candidates.Clear();
                 _pairs.Clear();
+                _compoundContacts.Clear();
+                _contacts.Clear();
                 _stepping = false;
             }
+        }
+
+        private void CollectPairContacts(CollisionBodyRecord a, CollisionBodyRecord b)
+        {
+            CompoundCollision2D.CollectContacts(a.Geometry, b.Geometry, _compoundContacts);
+            if (_compoundContacts.Count == 0)
+            {
+                return;
+            }
+
+            CollisionPair pair = new CollisionPair(a.Id, b.Id);
+            _pairs.Add(pair);
+            foreach (CompoundContact2D contact in _compoundContacts)
+            {
+                _contacts.Add(new CollisionContact(pair, contact));
+            }
+        }
+
+        private static int CompareContacts(CollisionContact a, CollisionContact b)
+        {
+            int pairOrder = a.Pair.CompareTo(b.Pair);
+            if (pairOrder != 0)
+            {
+                return pairOrder;
+            }
+
+            int firstShapeOrder = a.Shapes.ShapeIndexA.CompareTo(b.Shapes.ShapeIndexA);
+            return firstShapeOrder != 0 ? firstShapeOrder : a.Shapes.ShapeIndexB.CompareTo(b.Shapes.ShapeIndexB);
         }
 
         private void SynchronizeIndex()

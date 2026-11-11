@@ -2,7 +2,9 @@
 
 更新日期：2026-10-28。目标项目：`D:/UnityProject/AshFramework`。
 
-用途：保存本轮讨论上下文，便于后续提及“碰撞世界备忘”“接口方案”“脏标记和指针收益”时继续讨论。本文是需求与方案记忆，不是实现记录，也不证明代码已经通过测试。
+用途：保存讨论上下文，便于后续提及“碰撞世界备忘”“接口方案”“脏标记和指针收益”时继续讨论。实现与验证状态以源码及 TASK-CHECKLIST 为准。
+
+**最新范围更新：** 用户在接口、Unity 接入及说明场景完成并提交后，确认参考 LightweightPhysics 实现均匀网格并接入示例（“就这么做”）。此前“只使用接口”是已完成阶段，不再禁止本阶段的具体网格实现。世界/Body 仍依赖 IBroadPhase2D，不加入默认暴力回退、过滤、事件或位置修正。本阶段未自动提交。
 
 旧调查和实施草案中与本文不一致的历史表述，不应覆盖下列用户已确认事项；未来用户的新指令优先。尤其不要恢复“先做暴力枚举”“高度集合匹配已确定”或“只做四叉树”等旧设想。
 
@@ -15,7 +17,7 @@
 - 同一个碰撞世界统一使用 XY 或 XZ。用户要求提供平面一致性检查按钮。
 - 最终希望能够通过运行时配置选择空间哈希或松散四叉树。“运行时选择”是否还包含游戏运行中更换算法，尚未确认。
 - 不先实现暴力候选枚举作为正式检测路径。
-- 最新阶段要求：先使用空间划分接口，不实现具体空间划分技术。世界不能直接绑定四叉树；本轮讨论不因阅读参考代码而扩大到 unsafe 或算法实现。
+- 初始阶段要求先使用空间划分接口，不实现具体技术；该阶段已完成，后续均匀网格实施授权见文首。世界不绑定具体算法，参考代码不自动带入额外功能。
 - 最初只保存文档记忆；用户后续要求“完成第一步”，已实施核心阶段，详见第 2 节状态。仍不自动提交。
 - 用户后续明确要求“忘掉 jobs 布局”：按普通 C# 对象、数组及集合设计，不再把 Jobs/Burst、NativeArray 或为其准备的存储布局作为当前目标。历史参考中的 Jobs 讨论仅保留为审查背景。
 
@@ -51,13 +53,13 @@
 
 - 已有 Circle/AABB/OBB 精筛、平面适配、Body/Shape 组件、复合体与整体 AABB、逻辑高度数据、Editor Gizmos。
 - `AshFramework.Collide` 仅引用 Math，`noEngineReferences=true`、`allowUnsafeCode=false`；Unity 适配和 Editor 各有独立程序集。
-- 已有 CollisionWorld、CollisionBodyId、CollisionPair、内部记录及 IBroadPhase2D，以及 CollisionWorldBehaviour 的显式 Initialize/Step、Body.BindWorld 和 Inspector 平面检查。没有具体空间算法或事件；测试 Stub 仅预设候选与模拟失败。
+- 已有 CollisionWorld、CollisionBodyId、CollisionPair、内部记录及 IBroadPhase2D，以及 CollisionWorldBehaviour 的显式 Initialize/Step、Body.BindWorld 和 Inspector 平面检查。首个具体实现 UniformGridBroadPhase2D 已完成；没有事件。测试 Stub 仍只用于流程与失败模拟，实际网格另有独立测试。
 - `CollisionBodyBehaviour.Geometry` 返回反复复用的可变 `CompoundShape2D`。重建、刷新失败、禁用会清空该缓存；已经取得的引用也会看到清空结果。
 - `CompoundShape2D` 有 Count、索引器、SetShapes、Clear 和新 CopyFrom；仍未实现 IReadOnlyList，世界使用 CopyFrom 复制已验证形状及缓存 AABB。
 - 移动后显式 RefreshGeometry；深层结构调整后显式 RebuildShapes。当前组件没有完整的增量几何脏标记系统。
 - Gizmos 独立读取配置，不刷新或改写 Body 检测缓存与 LastError。
 - 当前布尔精筛采用相切算相交，不读取逻辑高度。
-- 核心 Step 已按规范化 ID 对排序输出，未要求完整锁步。第一阶段原生碰撞测试 158/158；第二阶段新增 23 项，现为 181/181 通过；CLI 参数阻塞与原生通过分别记录。
+- 核心 Step 已按规范化 ID 对排序输出，未要求完整锁步。核心、Unity 接入、说明场景及均匀网格合计 209/209 原生碰撞测试通过；CLI 参数阻塞与原生通过分别记录，详见 TASK-CHECKLIST。
 
 ### 2.1 第二阶段接入细节
 
@@ -68,13 +70,13 @@
 - 全场景发现只在初始化、显式 RefreshBindings 和检查按钮发生；每步复用遍历缓冲，尚未做完整几何脏标记优化，不宣称零 GC。
 - 运行时用 BindWorld；批量直接改写序列化字段后用 RefreshBindings。OnValidate 只标脏；Inspector 在主线程协调。没有全局静态注册表或自动检测循环。
 - World 禁用时暂停并保留身份；销毁清空独占索引。运行时状态不序列化，域重载后需重新注入。
-- 平面按钮只读且独立于初始化，包含禁用对象、明确报告零对象。按钮逻辑已测试，Inspector 外观视觉验收尚未执行。
+- 平面按钮只读且独立于初始化，包含禁用对象、明确报告零对象。按钮逻辑已测试；说明场景中已实际检查 5 个 Body，报告禁用 XZ 对象 1 个不一致。
 
 主要源码：[Body](../UnityAdapters/Components/CollisionBodyBehaviour.cs)、[复合体](../Shape/CompoundShape2D.cs)、[精筛](../NarrowPhase/CompoundCollision2D.cs)、[程序集](../AshFramework.Collide.asmdef)。
 
 ## 3. 当前接口与世界结构（第一阶段已实现）
 
-2026-10-28 用户要求搭建说明当前情况的示例，现已通过 Editor 创建并保存 `Samples/Scenes/CollideWorldOverview.unity`。配置为 XY，固定范围 X [-9, 9]、Y [-4, 4]；6 个 Body 中 5 个显式绑定，包括 2 个禁用，其中 1 个 XZ 平面不一致；另有越界及未绑定案例。没有注入任何索引。说明 Inspector/Play 面板支持手动刷新几何和尝试 Step，后者预期明确失败。World 检查按钮实际显示检查 5 个、不一致 1 个，已完成本项目视觉核对。新增场景测试 2 项，原生碰撞测试现为 183/183。查看步骤见 [Samples/README](../Samples/README.md)。
+2026-10-28 用户要求搭建说明当前情况的示例，已通过 Editor 创建并保存 `Samples/Scenes/CollideWorldOverview.unity`。配置为 XY，固定范围 X [-9, 9]、Y [-4, 4]；6 个 Body 中 5 个显式绑定，包括 2 个禁用，其中 1 个 XZ 平面不一致；另有越界及未绑定案例。后续已接入真实均匀网格：示例 Start 显式注入，Inspector 也可手动初始化；格子边长 2，仅为示例值，9 列 × 4 行。检测继续手动 Step，显示配对、Body ID 与暂停原因。实际 Play 操作已验证 A/B 配对 1 → 移开 0 → 还原 1，以及禁用 0 → 启用 1，B 的 ID 保持不变。查看步骤见 [Samples/README](../Samples/README.md)。
 
 ```text
 CollisionWorld
@@ -172,12 +174,21 @@ CollisionWorld
 - 所谓稠密数组实际保留空槽，扫描到历史分配上限；空间脏标记控制的是按需全量重建，不是每 Body 增量更新。
 - 本模块没有使用 Jobs/Burst；依赖的 Math128 可作宽整数研究材料，但舍入、溢出和中间位宽与当前 Math 不等价，未验证 Burst 编译或性能。
 - 不迁入默认暴力回退、小规模暴力阈值、双静态/休眠过滤、Layer/Mask、求解器或回滚功能。参考精筛相切不碰撞，与当前相切算相交不符。
-- 记录参考结论不改变第 1.1 节的已确认约定，也不扩大当前仅接口、无具体算法的范围。没有修改参考项目或以其结果替代本项目验收。
+- 参考结论不改变第 1.1 节的已确认约定。用户后续已授权均匀网格，具体实现遵循当前接口；没有修改参考项目或以其结果替代本项目验收。
+
+### 8.2 首个均匀网格的实际实现
+
+- `BroadPhase/UniformGridBroadPhase2D.cs` 保持纯核心程序集，采用固定范围格子表；Body 的完整 AABB 登记到所有覆盖格，更新保留共同格，移除旧格并增加新格。格子定位只用定点原始整数，不转 float。
+- Query 支持世界外查询、闭区间相切，内部代理按查询代数去重，回绕重置；只追加本次结果，不修改调用方原有内容。代理使用完整带世界归属的 ID，内部格子数据不进入公共形状。
+- ID/范围校验及目标桶容量准备先于登记变更；空桶池、查询缓冲复用。格子总数默认最多 65536，可显式配置；非法或超限直接失败，不截断、不自动改尺寸、不暴力兜底。
+- 参考跨格登记、容量复用和去重思路，未迁入全量 Build、完整 Body 数组依赖、静态/休眠过滤、Layer/Mask、求解器或小数量暴力阈值。正式 World/Body 仍仅依赖接口。
+- 新增网格 19 项及实际 Unity 接入 7 项测试；最终碰撞程序集 209/209，C# 全模块构建/格式通过。内存分配失败不做强制注入模拟；未作 Player/IL2CPP 或性能基准，不宣称零 GC。
+- 本轮没有实现完整几何脏标记、Jobs、unsafe、事件或位置修正。后续先根据实际使用确认过滤或接触信息的需求；位置修正仍需独立设计权威位置、接触方向与深度。
 
 ## 9. 后续继续讨论时的核对顺序
 
 1. 先读取本备忘和实际源码，确认期间是否已有实现或用户的新决定。
-2. 核心及 Unity 绑定已交付，先核对 [核心世界代码计划](CollisionWorldCorePlan.md) 与 README 的实际状态；保持当前仅接口、无具体算法的范围。第 1.1 节五项不再作为未定，不重新引入 Jobs 布局目标。
+2. 核心、Unity 绑定及首个均匀网格已交付，先核对 [核心世界代码计划](CollisionWorldCorePlan.md) 与 README 的实际状态；保持世界依赖接口、算法可注入。第 1.1 节五项不再作为未定，不重新引入 Jobs 布局目标。
 3. 固定碰撞覆盖范围的数值留到关卡配置；越界暂停该 Body、撤下旧项并报告，索引自身错误导致本步失败。区分已确认行为与尚未确定的具体算法参数。
-4. 具体算法、事件、完整锁步和 unsafe 继续作为独立后续议题。
+4. 其他具体算法、过滤、事件、位置修正、完整锁步和 unsafe 继续作为独立后续议题，不随参考代码自动加入。
 5. 实现和验证均在 AshFramework 目标项目执行；历史通过记录与当次实际验证分开。

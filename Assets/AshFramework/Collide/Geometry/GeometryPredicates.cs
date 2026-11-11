@@ -106,7 +106,7 @@ namespace AshFramework.Collide
             return distance <= ProjectionRadius(a, axis) + ProjectionRadius(b, axis);
         }
 
-        private static BigInteger ProjectionRadius(BoxData box, FixVector2 axis)
+        internal static BigInteger ProjectionRadius(BoxData box, FixVector2 axis)
         {
             BigInteger dotX = (BigInteger)box.AxisX.X.RawValue * axis.X.RawValue
                 + (BigInteger)box.AxisX.Y.RawValue * axis.Y.RawValue;
@@ -119,10 +119,25 @@ namespace AshFramework.Collide
 
     internal readonly struct BoxData
     {
-        internal FixVector2 Center { get; }
-        internal FixVector2 HalfExtents { get; }
-        internal FixVector2 AxisX { get; }
-        internal FixVector2 AxisY { get; }
+        internal FixVector2 Center
+        {
+            get;
+        }
+
+        internal FixVector2 HalfExtents
+        {
+            get;
+        }
+
+        internal FixVector2 AxisX
+        {
+            get;
+        }
+
+        internal FixVector2 AxisY
+        {
+            get;
+        }
 
         internal BoxData(Aabb2D box)
         {
