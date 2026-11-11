@@ -154,27 +154,51 @@ class ProjectCase(unittest.TestCase):
         self.assertEqual([step["status"] for step in run.data["steps"]], ["passed", "passed", "blocked"])
         self.assertFalse(any("run_tests" in args for args in calls))
 
-    def test_unsupported_test_arguments_block_without_accepting_retained_results(self):
+    def test_legacy_pipeline_with_no_mcp_response_blocks_without_accepting_retained_results(self):
         run, calls = self.verify_reference_pipeline([self.reference_test()], reject_start=True)
         self.assertEqual(run.finish(), 2)
-        self.assertIn("命令参数", run.data["steps"][-1]["message"])
+        self.assertIn("Unity MCP", run.data["steps"][-1]["message"])
         self.assertEqual(sum("run_tests" in args for args in calls), 1)
+        self.assertEqual(sum(args[0] == "mcp" for args in calls), 1)
+        self.assertEqual(sum("test_status" in args for args in calls), 1)
+
+    def test_legacy_pipeline_uses_structured_mcp_arguments_and_its_own_completed_result(self):
+        run, calls = self.verify_reference_pipeline([self.reference_test()], reject_start=True, mcp_result=True)
+        self.assertEqual(run.finish(), 0)
+        self.assertEqual(run.data["steps"][-1]["result"]["summary"]["passed"], 1)
+        self.assertEqual(sum("run_tests" in args for args in calls), 1)
+        self.assertEqual(sum(args[0] == "mcp" for args in calls), 1)
         self.assertEqual(sum("test_status" in args for args in calls), 1)
 
     @staticmethod
     def reference_test():
         return {"FullName": "Example.Tests.One", "Mode": "EditMode", "Explicit": False}
 
-    def verify_reference_pipeline(self, tests, reject_start=False):
+    def verify_reference_pipeline(self, tests, reject_start=False, mcp_result=False):
         run = Run(self.context, "verify --task editor --test-filter Example.Tests")
         calls = []
+        completed = {"status": "completed",
+                     "summary": {"total": 1, "passed": 1, "failed": 0, "skipped": 0, "inconclusive": 0},
+                     "results": [{"FullName": "Example.Tests.One", "Status": "Passed"}]}
 
-        def execute(arguments, timeout=45):
+        def execute(arguments, timeout=45, *, runner=None):
             arguments = arguments[1:]
             calls.append(arguments)
             command = "status"
             if arguments[0] == "status":
                 data = {"instances": [{"project": str(self.project), "state": "ready"}]}
+            elif arguments[0] == "mcp":
+                self.assertEqual(arguments[arguments.index("--project-path") + 1], str(self.project))
+                self.assertEqual(timeout, 1)
+                self.assertEqual(runner.keywords, {"name": "run_tests", "parameters": {
+                    "mode": "editor", "filter": "Example.Tests", "filter_type": "testName", "async_tests": True,
+                }})
+                if not mcp_result:
+                    return subprocess.CompletedProcess(arguments, 1, "", "")
+                response = {"jsonrpc": "2.0", "id": 2, "result": {
+                    "content": [{"type": "text", "text": json.dumps(completed)}],
+                }}
+                return subprocess.CompletedProcess(arguments, 0, json.dumps(response), "")
             elif "--timeout" not in arguments:
                 command = "command"
                 data = {"commands": [{"name": name} for name in
@@ -193,10 +217,7 @@ class ProjectCase(unittest.TestCase):
                                    "result": None, "executionTimeMs": None},
                     "run_tests": {"success": True, "command": "run_tests", "result": "running",
                                   "executionTimeMs": None, "Summary": {}, "StatusPath": "Temp/test-status.json"},
-                    "test_status": json.dumps({"status": "completed",
-                                               "summary": {"total": 1, "passed": 1, "failed": 0,
-                                                           "skipped": 0, "inconclusive": 0},
-                                               "results": [{"FullName": "Example.Tests.One", "Status": "Passed"}]}),
+                    "test_status": json.dumps(completed),
                 }
                 data = {"command": command, "parameters": {}, "result": results[command],
                         "target": {"projectPath": str(self.project)}}

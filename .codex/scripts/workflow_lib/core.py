@@ -145,7 +145,7 @@ class Run:
         self.data["steps"].append({"name": name, "required": True, "status": "blocked", "message": reason})
         self.save()
 
-    def execute(self, arguments, timeout=60):
+    def execute(self, arguments, timeout=60, *, runner=None):
         arguments = [str(item) for item in arguments]
         number = len(self.data["commands"]) + 1
         record = {"args": redact(arguments), "cwd": str(self.context.project), "startedAt": timestamp()}
@@ -157,8 +157,11 @@ class Run:
         for key in ("UNITY_RUNTIME", "UNITY_RUNTIME_PATH", "UNITY_PROJECT_PATH"):
             environment.pop(key, None)
         try:
-            completed = subprocess.run(arguments, cwd=self.context.project, env=environment,
-                                       capture_output=True, timeout=timeout, shell=False)
+            if runner is None:
+                completed = subprocess.run(arguments, cwd=self.context.project, env=environment,
+                                           capture_output=True, timeout=timeout, shell=False)
+            else:
+                completed = runner(arguments, cwd=self.context.project, env=environment, timeout=timeout)
             stdout = completed.stdout.decode("utf-8-sig", errors="replace")
             stderr = completed.stderr.decode("utf-8-sig", errors="replace")
             record["returncode"] = completed.returncode

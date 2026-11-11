@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from functools import partial
 import json
 import time
 
 from .core import WorkflowError, blocked, same_path
+from . import unity_mcp
 
 
 READ_ONLY = {"editor_status", "list_open_scenes", "get_scene_hierarchy", "get_selection",
              "get_console_logs", "get_build_settings", "list_tests", "test_status", "recompile_status"}
 RESERVED = {"project", "project_path", "project-path", "runtime", "runtime_path", "runtime-path",
             "timeout", "format", "json", "confirm", "dry_run", "detach", "result_only"}
+
+
+class LegacyPipelineArguments(WorkflowError):
+    def __init__(self):
+        super().__init__("当前 CLI 不支持向此 Pipeline 版本传递命令参数；操作未被执行。", "blocked")
 
 
 def unwrap(text):
@@ -29,11 +36,15 @@ def unwrap(text):
         if not isinstance(value, dict):
             return value
         if value.get("success") is False or value.get("Success") is False:
-            codes = str(value.get("errors", value.get("Error", "")))
+            errors = value.get("errors", value.get("Error", ""))
+            codes = str(errors)
             if any(word in codes for word in ("NO_INSTANCES", "UNREACHABLE", "CONNECTION", "AMBIGUOUS")):
                 blocked("目标项目没有可用的 Pipeline 连接；详见命令证据。")
-            if "too old to parse command lines" in codes:
-                blocked("当前 CLI 不支持向此 Pipeline 版本传递命令参数；操作未被执行。请核对 CLI/包版本兼容性，详见命令证据。")
+            if (value.get("data") is None and isinstance(errors, list) and len(errors) == 1
+                    and isinstance(errors[0], dict) and errors[0].get("code") == "COMMAND_FAILED"
+                    and str(errors[0].get("message", "")).startswith(
+                        "This Editor's Unity Pipeline package is too old to parse command lines.")):
+                raise LegacyPipelineArguments()
             raise WorkflowError("CLI/Pipeline 报告失败；详见命令证据。")
         if "data" in value and ("success" in value or "command" in value):
             value = value["data"]
@@ -155,7 +166,7 @@ class Unity:
         self.capabilities = command_names(data)
         return sorted(self.capabilities)
 
-    def call(self, name, parameters=None, polling=False):
+    def call(self, name, parameters=None, polling=False, *, mcp_timeout=45):
         if self.capabilities is None:
             self.discover()
         if name not in self.capabilities:
@@ -169,7 +180,19 @@ class Unity:
         arguments = ["command", "--project-path", str(self.context.project), "--timeout", "30", name]
         for key, value in parameters.items():
             arguments.extend(["--" + key, value if isinstance(value, str) else json.dumps(value)])
-        return self.raw(arguments)
+        try:
+            return self.raw(arguments)
+        except LegacyPipelineArguments:
+            if not parameters:
+                raise
+            self.target(require_ready=not polling)
+            result = self.run.execute(
+                [self.cli, "mcp", "--project-path", str(self.context.project), "--non-interactive", "--no-log-proxy"],
+                timeout=mcp_timeout, runner=partial(unity_mcp.exchange, name=name, parameters=parameters),
+            )
+            if result.returncode:
+                blocked("Unity MCP 连接未返回工具响应；请检查实际状态，详见命令证据。")
+            return unwrap(unity_mcp.tool_text(result.stdout))
 
     def query(self, name, parameters=None):
         if name not in READ_ONLY:
@@ -212,8 +235,14 @@ class Unity:
         before = self.call("test_status")
         if isinstance(before, dict) and before.get("status") == "running":
             blocked("目标项目已有测试运行，未启动新的测试。")
-        started = self.call("run_tests", {"mode": mode, "filter": query, "filter_type": filter_type, "async_tests": True})
-        if not isinstance(started, dict) or started.get("result", started.get("Result")) != "running":
+        started = self.call(
+            "run_tests", {"mode": mode, "filter": query, "filter_type": filter_type, "async_tests": True},
+            mcp_timeout=timeout,
+        )
+        if isinstance(started, dict) and started.get("status") in {"completed", "failed", "cancelled"}:
+            result = started
+        elif isinstance(started, dict) and started.get("result", started.get("Result")) == "running":
+            result = self.poll("test_status", {"completed", "failed", "cancelled"}, timeout)
+        else:
             blocked("未确认本次异步测试启动，不能使用保留的旧测试结果。")
-        result = self.poll("test_status", {"completed", "failed", "cancelled"}, timeout)
         return {"mode": mode, "filter": query, "summary": validate_tests(result, expected), "results": result["results"]}
