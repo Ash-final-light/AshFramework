@@ -23,7 +23,9 @@
 - `UniformGridBroadPhase2D` 固定范围均匀网格，逐项插入/更新/移除、跨格去重和桶容量复用。
 - `CollideWorldOverview` 示例场景显式注入网格，展示真实碰撞对、Body ID、暂停原因与手动操作。
 
-当前不包含逻辑高度匹配、类别过滤、事件、射线或位置修正。核心世界仍需要调用方提供空的、独占的索引实现，没有默认或暴力兜底；均匀网格是可显式选择的首个实现。
+Unity 层提供单角色对固定障碍的位置修正。核心检测仍按几何报告接触。核心世界需要调用方提供空的、独占的索引，首个实现为均匀网格。
+
+位置修正使用独立 `CollisionBodySettings` 配置 Body 的层，`CharacterMovement` 配置阻挡 Mask 与修正策略，由 `PositionCorrectionManager.TryMoveAndCorrect` 显式执行。当前处理 `Immediate + Snap`。成功时返回最终位置对应的配对与接触，失败时恢复请求前的位置、清空结果，下次 Step 重新同步。详见 [位置修正示例](Samples/README.md#单角色位置修正示例)。
 
 后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。用户在接口及 Unity 接入阶段完成后，确认继续均匀网格实现与示例接入，已扩展此前“仅接口”的阶段范围。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
 

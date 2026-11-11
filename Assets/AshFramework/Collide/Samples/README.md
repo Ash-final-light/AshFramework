@@ -2,6 +2,10 @@
 
 通过 Unity Editor 创建并保存，用于检查 Body / Shape 配置及 Scene 视图 Gizmos。
 
+## 单角色位置修正示例
+
+打开 [CollidePositionCorrection.unity](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollidePositionCorrection.unity)，选择 `00_说明与操作`，显式初始化网格。初始 Step 显示圆与复合墙的两条 `0.5` 接触。点「移向墙面并修正」，角色从目标 `x = 1.5` 回退到 `x = 1`，两条接触深度为 `0`。点「移入触发区」，最终 `x` 仍为目标 `-2.5`，结果包含触发区接触。
+
 ## 复合体接触示例
 
 打开 [CollideCompoundContacts.unity](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideCompoundContacts.unity)。在 Inspector 初始化均匀网格，再执行 Step。半径为 1 的圆位于 `x = 1.5`，同一个墙 Body 的上下两个子矩形都从 `x = 2` 开始，结果为 **1 个 Body 对、2 条深度为 0.5 的接触**。

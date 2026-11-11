@@ -12,6 +12,7 @@ namespace AshFramework.Collide.Samples.Editor
     {
         public const string ScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollideWorldOverview.unity";
         public const string CompoundContactsScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollideCompoundContacts.unity";
+        public const string PositionCorrectionScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollidePositionCorrection.unity";
         private static readonly string[] Descriptions =
         {
             "01 正常复合体 A：圆 + 旋转矩形，显式绑定 World，逻辑高度 1。",
@@ -126,13 +127,7 @@ namespace AshFramework.Collide.Samples.Editor
             world.Configure(CollisionPlane.XY, Vector2.zero, new Vector2(9, 4));
             Transform cases = new GameObject("02_Body示例").transform;
 
-            CollisionBodyBehaviour wall = new GameObject("01_复合墙 A").AddComponent<CollisionBodyBehaviour>();
-            wall.transform.SetParent(cases, false);
-            wall.transform.position = new Vector3(3, 0, 0);
-            wall.Plane = CollisionPlane.XY;
-            CreateWallPart(wall.transform, "上半墙", 1);
-            CreateWallPart(wall.transform, "下半墙", -1);
-            wall.BindWorld(world);
+            CollisionBodyBehaviour wall = CreateCompoundWall(cases, world);
 
             CollisionBodyBehaviour circle = CreateBody(cases, world, "02_圆 B", new Vector3(1.5f, 0, 0));
             circle.GetComponent<CircleShapeBehaviour>().Radius = 1;
@@ -149,6 +144,54 @@ namespace AshFramework.Collide.Samples.Editor
             }
 
             FocusOverview(CompoundContactsScenePath);
+        }
+
+        [MenuItem("Tools/AshFramework/Collide/创建或打开位置修正示例")]
+        public static void CreateOrOpenPositionCorrection()
+        {
+            if (!CanOpenExample() || OpenExistingExample(PositionCorrectionScenePath))
+            {
+                return;
+            }
+
+            Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            CollisionWorldOverview overview = new GameObject("00_说明与操作").AddComponent<CollisionWorldOverview>();
+            GameObject worldObject = new GameObject("01_World_XY_固定范围");
+            CollisionWorldBehaviour world = worldObject.AddComponent<CollisionWorldBehaviour>();
+            world.Configure(CollisionPlane.XY, Vector2.zero, new Vector2(9, 4));
+            PositionCorrectionManager manager = worldObject.AddComponent<PositionCorrectionManager>();
+            Transform cases = new GameObject("02_Body示例").transform;
+            Vector3 wallTarget = new Vector3(1.5f, 0, 0);
+            Vector3 triggerTarget = new Vector3(-2.5f, 0, 0);
+
+            CollisionBodyBehaviour wall = CreateCompoundWall(cases, world);
+            CollisionBodyBehaviour circle = CreateBody(cases, world, "02_角色 B", wallTarget);
+            circle.GetComponent<CircleShapeBehaviour>().Radius = 1;
+            CollisionBodyBehaviour trigger = CreateBody(cases, world, "03_触发区", new Vector3(-3, 0, 0));
+            CharacterMovement character = circle.gameObject.AddComponent<CharacterMovement>();
+            character.Body = circle;
+            manager.Configure(world, new[]
+            {
+                SetLayer(wall, CollisionLayer.WorldSolid),
+                SetLayer(circle, CollisionLayer.Character),
+                SetLayer(trigger, CollisionLayer.Trigger)
+            });
+
+            overview.Configure(world, new[]
+            {
+                new CollisionWorldOverview.Entry(wall, "墙 A：WorldSolid，左边界 x = 2，两个子矩形。", new Vector3(0.5f, 2.5f, 0)),
+                new CollisionWorldOverview.Entry(circle, "角色 B：半径 1。移向墙面时，从 x = 1.5 修正到 x = 1。", new Vector3(-1, 1.6f, 0)),
+                new CollisionWorldOverview.Entry(trigger, "触发区：报告接触，角色保留目标位置 x = -2.5。", new Vector3(-1, 1.6f, 0))
+            });
+            overview.ConfigureCorrectionExample(manager, character, wallTarget, triggerTarget);
+
+            CreateCamera();
+            if (!EditorSceneManager.SaveScene(scene, PositionCorrectionScenePath))
+            {
+                throw new InvalidOperationException("Failed to save position correction scene.");
+            }
+
+            FocusOverview(PositionCorrectionScenePath);
         }
 
         private static bool CanOpenExample()
@@ -189,6 +232,25 @@ namespace AshFramework.Collide.Samples.Editor
             part.transform.SetParent(parent, false);
             part.transform.localPosition = new Vector3(0, y, 0);
             part.AddComponent<BoxShapeBehaviour>().HalfExtents = Vector2.one;
+        }
+
+        private static CollisionBodyBehaviour CreateCompoundWall(Transform parent, CollisionWorldBehaviour world)
+        {
+            CollisionBodyBehaviour wall = new GameObject("01_复合墙 A").AddComponent<CollisionBodyBehaviour>();
+            wall.transform.SetParent(parent, false);
+            wall.transform.position = new Vector3(3, 0, 0);
+            wall.Plane = CollisionPlane.XY;
+            CreateWallPart(wall.transform, "上半墙", 1);
+            CreateWallPart(wall.transform, "下半墙", -1);
+            wall.BindWorld(world);
+            return wall;
+        }
+
+        private static CollisionBodySettings SetLayer(CollisionBodyBehaviour body, CollisionLayer layer)
+        {
+            CollisionBodySettings settings = body.gameObject.AddComponent<CollisionBodySettings>();
+            settings.Layer = layer;
+            return settings;
         }
 
         private static void CreateCamera()

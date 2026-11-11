@@ -53,6 +53,26 @@ namespace AshFramework.Collide.Samples.Editor
                 SceneView.RepaintAll();
             }
 
+            if (overview.HasCorrectionExample)
+            {
+                using (new EditorGUI.DisabledScope(overview.World == null || !overview.World.IsInitialized))
+                {
+                    if (GUILayout.Button("移向墙面并修正"))
+                    {
+                        Undo.RecordObject(overview.CorrectionTransform, "Move character against wall");
+                        overview.AttemptCorrection(false);
+                        SceneView.RepaintAll();
+                    }
+
+                    if (GUILayout.Button("移入触发区"))
+                    {
+                        Undo.RecordObject(overview.CorrectionTransform, "Move character into trigger");
+                        overview.AttemptCorrection(true);
+                        SceneView.RepaintAll();
+                    }
+                }
+            }
+
             EditorGUILayout.HelpBox(overview.StepMessage, MessageType.Info);
             EditorGUILayout.LabelField("上次成功 Step 的配对和接触，修改后需再次 Step。", EditorStyles.wordWrappedLabel);
             for (int i = 0; i < overview.PairCount; i++)

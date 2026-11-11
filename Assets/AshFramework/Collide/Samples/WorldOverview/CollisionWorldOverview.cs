@@ -47,6 +47,18 @@ namespace AshFramework.Collide.Samples
         [Min(0.01f)]
         private float _cellSize = 2;
 
+        [SerializeField]
+        private PositionCorrectionManager _correctionManager;
+
+        [SerializeField]
+        private CharacterMovement _character;
+
+        [SerializeField]
+        private Vector3 _wallTarget;
+
+        [SerializeField]
+        private Vector3 _triggerTarget;
+
         private readonly List<CollisionPair> _results = new List<CollisionPair>();
         private readonly List<string> _pairDescriptions = new List<string>();
         private readonly List<CollisionContact> _contacts = new List<CollisionContact>();
@@ -62,6 +74,8 @@ namespace AshFramework.Collide.Samples
         public int CaseCount => _entries.Length;
         public int PairCount => _results.Count;
         public int ContactCount => _contacts.Count;
+        public bool HasCorrectionExample => _correctionManager != null && CorrectionTransform != null;
+        public Transform CorrectionTransform => _character != null && _character.Body != null ? _character.Body.transform : null;
         public int GridColumns => _grid == null ? 0 : _grid.Columns;
         public int GridRows => _grid == null ? 0 : _grid.Rows;
         public float GridCellSize => _grid == null ? 0 : _grid.CellSize.ToSingle();
@@ -98,6 +112,15 @@ namespace AshFramework.Collide.Samples
         {
             _world = world != null ? world : throw new ArgumentNullException(nameof(world));
             _entries = entries != null ? (Entry[])entries.Clone() : throw new ArgumentNullException(nameof(entries));
+        }
+
+        public void ConfigureCorrectionExample(PositionCorrectionManager manager, CharacterMovement character,
+            Vector3 wallTarget, Vector3 triggerTarget)
+        {
+            _correctionManager = manager;
+            _character = character;
+            _wallTarget = wallTarget;
+            _triggerTarget = triggerTarget;
         }
 
         public bool InitializeGrid()
@@ -273,11 +296,7 @@ namespace AshFramework.Collide.Samples
 
         public bool AttemptStep()
         {
-            _results.Clear();
-            _pairDescriptions.Clear();
-            _contacts.Clear();
-            _contactOrigins.Clear();
-            LastStepSucceeded = false;
+            ClearDisplay();
             if (_world == null)
             {
                 StepMessage = "缺少 World 引用。";
@@ -285,9 +304,40 @@ namespace AshFramework.Collide.Samples
             }
 
             bool success = _world.Step(_results, _contacts, out string error);
+            return PublishDisplay(success, "本次 Step", error);
+        }
+
+        public bool AttemptCorrection(bool useTriggerTarget)
+        {
+            ClearDisplay();
+            if (!HasCorrectionExample)
+            {
+                StepMessage = "缺少角色或位置修正管理器。";
+                return false;
+            }
+
+            Vector3 target = useTriggerTarget ? _triggerTarget : _wallTarget;
+            bool success = _correctionManager.TryMoveAndCorrect(_character, target, _results, _contacts, out string error);
+            string operation = success ? "位置修正，目标 X=" + target.x.ToString("G9", CultureInfo.InvariantCulture)
+                + "，最终 X=" + _character.Body.transform.position.x.ToString("G9", CultureInfo.InvariantCulture)
+                : "位置修正";
+            return PublishDisplay(success, operation, error);
+        }
+
+        private void ClearDisplay()
+        {
+            _results.Clear();
+            _pairDescriptions.Clear();
+            _contacts.Clear();
+            _contactOrigins.Clear();
+            LastStepSucceeded = false;
+        }
+
+        private bool PublishDisplay(bool success, string operation, string error)
+        {
             LastStepSucceeded = success;
-            StepMessage = success ? "本次 Step 成功，碰撞对 " + _results.Count + "，子形状接触 " + _contacts.Count
-                : "本次 Step 失败：" + error;
+            StepMessage = success ? operation + "成功，碰撞对 " + _results.Count + "，子形状接触 " + _contacts.Count
+                : operation + "失败：" + error;
             if (success)
             {
                 foreach (CollisionPair pair in _results)
@@ -400,7 +450,10 @@ namespace AshFramework.Collide.Samples
                 GUILayout.Label(GetBodyStatus(i), _textStyle);
             }
 
-            GUILayout.Label("当前不自动 Step，不派发事件，不执行位置修正。", _textStyle);
+            if (HasCorrectionExample)
+            {
+                GUILayout.Label("在说明对象的 Inspector 中执行位置修正。", _textStyle);
+            }
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
