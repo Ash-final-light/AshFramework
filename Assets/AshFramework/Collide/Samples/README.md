@@ -2,9 +2,24 @@
 
 通过 Unity Editor 创建并保存，用于检查 Body / Shape 配置及 Scene 视图 Gizmos。
 
+## 多墙位置修正示例
+
+打开 [CollideMultiWallCorrection.unity](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollideMultiWallCorrection.unity)，进入 Play，选中 `00_说明与操作`。
+
+- **墙角修正**。目标 `(1.5, 1.5)`，角色经两次修正停在 `(1, 1)`，最大剩余穿透为 `0`。
+- **测试过窄夹缝**。角色直径为 `2`，缝宽为 `1.5`。默认 4 次迭代后报告达到上限，显示最后位置的最大剩余穿透 `0.5`。
+
 ## 单角色位置修正示例
 
 打开 [CollidePositionCorrection.unity](D:/UnityProject/AshFramework/Assets/AshFramework/Collide/Samples/Scenes/CollidePositionCorrection.unity)，选择 `00_说明与操作`，显式初始化网格。初始 Step 显示圆与复合墙的两条 `0.5` 接触。点「移向墙面并修正」，角色从目标 `x = 1.5` 回退到 `x = 1`，两条接触深度为 `0`。点「移入触发区」，最终 `x` 仍为目标 `-2.5`，结果包含触发区接触。
+
+## 跨帧修正示例
+
+在单角色修正场景进入 Play，把角色 `CharacterMovement` 的 Mode 设为 `Gradual`，Correction Speed 设为 `2`。回到 `00_说明与操作` 的 Inspector 后依次点击以下按钮。每个处理帧按 `0.125` 秒计算，距离预算为 `0.25`。
+
+1. 点击「关闭位置修正」，再点「移向墙面并修正」。圆心保持在 `x = 1.5`，两条接触深度为 `0.5`。
+2. 点击「开启并处理当前修正帧」。圆心移到 `x = 1.25`，剩余穿透 `0.25`。
+3. 点击「处理下一修正帧（0.125 秒）」。圆心移到 `x = 1` 并与墙相切，剩余穿透为 `0`。
 
 ## 复合体接触示例
 

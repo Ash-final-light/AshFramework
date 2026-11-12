@@ -13,6 +13,7 @@ namespace AshFramework.Collide.Samples.Editor
         public const string ScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollideWorldOverview.unity";
         public const string CompoundContactsScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollideCompoundContacts.unity";
         public const string PositionCorrectionScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollidePositionCorrection.unity";
+        public const string MultiWallCorrectionScenePath = "Assets/AshFramework/Collide/Samples/Scenes/CollideMultiWallCorrection.unity";
         private static readonly string[] Descriptions =
         {
             "01 正常复合体 A：圆 + 旋转矩形，显式绑定 World，逻辑高度 1。",
@@ -194,6 +195,60 @@ namespace AshFramework.Collide.Samples.Editor
             FocusOverview(PositionCorrectionScenePath);
         }
 
+        [MenuItem("Tools/AshFramework/Collide/创建或打开多墙修正示例")]
+        public static void CreateOrOpenMultiWallCorrection()
+        {
+            if (!CanOpenExample() || OpenExistingExample(MultiWallCorrectionScenePath))
+            {
+                return;
+            }
+
+            Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            CollisionWorldOverview overview = new GameObject("00_说明与操作").AddComponent<CollisionWorldOverview>();
+            GameObject worldObject = new GameObject("01_World_XY_固定范围");
+            CollisionWorldBehaviour world = worldObject.AddComponent<CollisionWorldBehaviour>();
+            world.Configure(CollisionPlane.XY, Vector2.zero, new Vector2(9, 4));
+            PositionCorrectionManager manager = worldObject.AddComponent<PositionCorrectionManager>();
+            Transform cases = new GameObject("02_Body示例").transform;
+            Vector3 cornerTarget = new Vector3(1.5f, 1.5f, 0);
+            Vector3 gapTarget = new Vector3(-5, 0, 0);
+
+            CollisionBodyBehaviour wall = CreateCompoundWall(cases, world);
+            CollisionBodyBehaviour circle = CreateBody(cases, world, "02_角色 B", cornerTarget);
+            circle.GetComponent<CircleShapeBehaviour>().Radius = 1;
+            CharacterMovement character = circle.gameObject.AddComponent<CharacterMovement>();
+            character.Body = circle;
+            CollisionBodyBehaviour upper = CreateBox(cases, world, "03_墙角上墙", new Vector3(0, 3, 0), new Vector2(1.75f, 1));
+            CollisionBodyBehaviour left = CreateBox(cases, world, "04_夹缝左墙", new Vector3(-6.75f, 0, 0), new Vector2(1, 2));
+            CollisionBodyBehaviour right = CreateBox(cases, world, "05_夹缝右墙", new Vector3(-3.25f, 0, 0), new Vector2(1, 2));
+            manager.Configure(world, new[]
+            {
+                SetLayer(wall, CollisionLayer.WorldSolid),
+                SetLayer(circle, CollisionLayer.Character),
+                SetLayer(upper, CollisionLayer.WorldSolid),
+                SetLayer(left, CollisionLayer.WorldSolid),
+                SetLayer(right, CollisionLayer.WorldSolid)
+            });
+
+            overview.Configure(world, new[]
+            {
+                new CollisionWorldOverview.Entry(wall, "墙角右墙，左边界 x = 2。", new Vector3(0, -2.7f, 0)),
+                new CollisionWorldOverview.Entry(circle, "角色半径 1。墙角应在 2 次迭代后停到 (1, 1)。", new Vector3(0.7f, 0.8f, 0)),
+                new CollisionWorldOverview.Entry(upper, "墙角上墙，下边界 y = 2。", new Vector3(0, 1.2f, 0)),
+                new CollisionWorldOverview.Entry(left, "夹缝宽 1.5，角色直径 2。", new Vector3(-1, 2.6f, 0)),
+                new CollisionWorldOverview.Entry(right, "达到上限后应报告剩余穿透。", new Vector3(-1, 2.6f, 0))
+            });
+            overview.ConfigureCorrectionExample(manager, character, cornerTarget, gapTarget, "墙角修正", "测试过窄夹缝");
+
+            CreateCamera();
+            if (!EditorSceneManager.SaveScene(scene, MultiWallCorrectionScenePath))
+            {
+                throw new InvalidOperationException("Failed to save multi-wall correction scene.");
+            }
+
+            FocusOverview(MultiWallCorrectionScenePath);
+        }
+
         private static bool CanOpenExample()
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
@@ -251,6 +306,18 @@ namespace AshFramework.Collide.Samples.Editor
             CollisionBodySettings settings = body.gameObject.AddComponent<CollisionBodySettings>();
             settings.Layer = layer;
             return settings;
+        }
+
+        private static CollisionBodyBehaviour CreateBox(Transform parent, CollisionWorldBehaviour world, string name,
+            Vector3 position, Vector2 halfExtents)
+        {
+            CollisionBodyBehaviour body = new GameObject(name).AddComponent<CollisionBodyBehaviour>();
+            body.transform.SetParent(parent, false);
+            body.transform.position = position;
+            body.Plane = CollisionPlane.XY;
+            body.gameObject.AddComponent<BoxShapeBehaviour>().HalfExtents = halfExtents;
+            body.BindWorld(world);
+            return body;
         }
 
         private static void CreateCamera()

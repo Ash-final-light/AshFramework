@@ -25,13 +25,19 @@
 
 Unity 层提供单角色对固定障碍的位置修正。核心检测仍按几何报告接触。核心世界需要调用方提供空的、独占的索引，首个实现为均匀网格。
 
-位置修正使用独立 `CollisionBodySettings` 配置 Body 的层，`CharacterMovement` 配置阻挡 Mask 与修正策略，由 `PositionCorrectionManager.TryMoveAndCorrect` 显式执行。当前处理 `Immediate + Snap`。成功时返回最终位置对应的配对与接触，失败时恢复请求前的位置、清空结果，下次 Step 重新同步。详见 [位置修正示例](Samples/README.md#单角色位置修正示例)。
+位置修正使用独立 `CollisionBodySettings` 配置 Body 的层，`CharacterMovement` 配置阻挡 Mask 与修正策略。`Timing` 决定 `CanCorrectPosition` 的初始值，`Immediate` 为 `true`，`Deferred` 为 `false`。`PositionCorrectionManager.TryMoveAndCorrect` 写入目标位置并执行 Step。开关关闭时返回 `Skipped` 和该位置的碰撞对、接触及最大阻挡深度。开关开启时按最深阻挡接触执行 `Snap`，每次写回后重新 Step。默认最多修正 4 次，穿透容差为 `0.00001` 个世界单位，两项均可在管理器的 Inspector 中配置。
+
+运行时调用 `TrySetCorrectionAllowed` 切换开关。从关闭切到开启时，管理器在返回前检测并修正角色当前位置。关闭或重复设置时，调用方的碰撞列表保留，返回默认的 `NotCompleted`。开启失败时恢复调用前的位置、清空输出，开关保持关闭，可以重试。
+
+完成 Step 的调用返回 `true`，`PositionCorrectionResult` 提供停止原因、迭代次数和最终最大阻挡深度。达到上限或位置无法变化时保留最后一次有效检测的位置及结果。Step 失败则恢复调用前的位置、清空结果，下次 Step 重新同步。详见 [位置修正示例](Samples/README.md#多墙位置修正示例)。
+
+使用 `Gradual` 时，在角色的 `CharacterMovement` 设置正的 `CorrectionSpeed`（世界单位/秒）。移动和开启修正使用带 `logicalFrame`、`fixedDeltaTime`（秒）的重载，开启调用当帧就处理。返回 `InProgress` 后，上层可在后续逻辑帧调用 `TryContinueGradualCorrection` 继续；同一 Body 在同一帧只获得一次修正预算。持续帧数通过 `ProcessedFrames` 返回。累计帧上限由管理器的 `MaxGradualFrames` 配置，默认为 60；超过容差且用完处理帧时返回 `FrameLimit`。关闭期间照常检测，重新开启时从当前位置开始。当前帧的 Step 失败时回滚该次调用的位移，保留之前帧的位移。详见 [跨帧修正示例](Samples/README.md#跨帧修正示例)。
 
 后续世界与空间划分的最新讨论见 [碰撞世界与空间划分讨论备忘](Ref/CollisionWorldDiscussionMemory.md)（2026-10-28）。用户在接口及 Unity 接入阶段完成后，确认继续均匀网格实现与示例接入，已扩展此前“仅接口”的阶段范围。历史调查中的暴力基线、高度匹配等旧设想不作为最新需求。
 
 外部项目的世界存储、接口与缓冲设计参考见 [LightweightPhysics 源码参考审查](Ref/LightweightPhysicsReferenceReview.md)。该文同时记录与当前需求不兼容的行为及 Math128/Jobs 的验证边界，不表示已迁入实现。
 
-实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md)：核心、Unity 接入及首个均匀网格均已实现，采用普通 C# 容器。位置修正仍留待后续阶段。
+实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md) 和 [位置修正实施计划](Ref/PositionCorrectionPlan.md)。
 
 ## 数据与判定约定
 

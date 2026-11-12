@@ -12,6 +12,8 @@ namespace AshFramework.Collide.Samples
     [AddComponentMenu("AshFramework/Collide/Samples/World Overview")]
     public sealed class CollisionWorldOverview : MonoBehaviour
     {
+        private const double CorrectionFrameDuration = 0.125;
+
         [Serializable]
         public sealed class Entry
         {
@@ -59,6 +61,12 @@ namespace AshFramework.Collide.Samples
         [SerializeField]
         private Vector3 _triggerTarget;
 
+        [SerializeField]
+        private string _primaryCorrectionLabel = "移向墙面并修正";
+
+        [SerializeField]
+        private string _secondaryCorrectionLabel = "移入触发区";
+
         private readonly List<CollisionPair> _results = new List<CollisionPair>();
         private readonly List<string> _pairDescriptions = new List<string>();
         private readonly List<CollisionContact> _contacts = new List<CollisionContact>();
@@ -67,6 +75,7 @@ namespace AshFramework.Collide.Samples
         private Vector3 _originalBPosition;
         private bool _hasOriginalBPosition;
         private bool _bSeparated;
+        private long _correctionFrame;
         private Vector2 _scroll;
         private GUIStyle _textStyle;
 
@@ -75,7 +84,11 @@ namespace AshFramework.Collide.Samples
         public int PairCount => _results.Count;
         public int ContactCount => _contacts.Count;
         public bool HasCorrectionExample => _correctionManager != null && CorrectionTransform != null;
+        public bool UsesGradualCorrection => HasCorrectionExample && _character.Mode == CorrectionMode.Gradual;
+        public bool CanCorrectPosition => HasCorrectionExample && _character.CanCorrectPosition;
         public Transform CorrectionTransform => _character != null && _character.Body != null ? _character.Body.transform : null;
+        public string PrimaryCorrectionLabel => _primaryCorrectionLabel;
+        public string SecondaryCorrectionLabel => _secondaryCorrectionLabel;
         public int GridColumns => _grid == null ? 0 : _grid.Columns;
         public int GridRows => _grid == null ? 0 : _grid.Rows;
         public float GridCellSize => _grid == null ? 0 : _grid.CellSize.ToSingle();
@@ -115,12 +128,14 @@ namespace AshFramework.Collide.Samples
         }
 
         public void ConfigureCorrectionExample(PositionCorrectionManager manager, CharacterMovement character,
-            Vector3 wallTarget, Vector3 triggerTarget)
+            Vector3 primaryTarget, Vector3 secondaryTarget, string primaryLabel = "移向墙面并修正", string secondaryLabel = "移入触发区")
         {
             _correctionManager = manager;
             _character = character;
-            _wallTarget = wallTarget;
-            _triggerTarget = triggerTarget;
+            _wallTarget = primaryTarget;
+            _triggerTarget = secondaryTarget;
+            _primaryCorrectionLabel = primaryLabel;
+            _secondaryCorrectionLabel = secondaryLabel;
         }
 
         public bool InitializeGrid()
@@ -307,7 +322,7 @@ namespace AshFramework.Collide.Samples
             return PublishDisplay(success, "本次 Step", error);
         }
 
-        public bool AttemptCorrection(bool useTriggerTarget)
+        public bool AttemptCorrection(bool useSecondaryTarget)
         {
             ClearDisplay();
             if (!HasCorrectionExample)
@@ -316,12 +331,72 @@ namespace AshFramework.Collide.Samples
                 return false;
             }
 
-            Vector3 target = useTriggerTarget ? _triggerTarget : _wallTarget;
-            bool success = _correctionManager.TryMoveAndCorrect(_character, target, _results, _contacts, out string error);
-            string operation = success ? "位置修正，目标 X=" + target.x.ToString("G9", CultureInfo.InvariantCulture)
-                + "，最终 X=" + _character.Body.transform.position.x.ToString("G9", CultureInfo.InvariantCulture)
-                : "位置修正";
-            return PublishDisplay(success, operation, error);
+            Vector3 target = useSecondaryTarget ? _triggerTarget : _wallTarget;
+            bool success = _correctionManager.TryMoveAndCorrect(_character, target, ++_correctionFrame, CorrectionFrameDuration, _results, _contacts,
+                out PositionCorrectionResult result, out string error);
+            return PublishCorrection(success, result, error, target);
+        }
+
+        public void ToggleGradualCorrection()
+        {
+            if (!UsesGradualCorrection)
+            {
+                return;
+            }
+
+            bool allowed = !_character.CanCorrectPosition;
+            bool success = _correctionManager.TrySetCorrectionAllowed(_character, allowed, ++_correctionFrame, CorrectionFrameDuration,
+                _results, _contacts, out PositionCorrectionResult result, out string error);
+            if (success && !allowed)
+            {
+                StepMessage = "修正已关闭。移动时仍会检测碰撞。";
+                return;
+            }
+
+            PublishCorrection(success, result, error);
+        }
+
+        public void AdvanceGradualCorrection()
+        {
+            if (!UsesGradualCorrection)
+            {
+                return;
+            }
+
+            bool success = _correctionManager.TryContinueGradualCorrection(_character, ++_correctionFrame, CorrectionFrameDuration,
+                _results, _contacts, out PositionCorrectionResult result, out string error);
+            if (success && result.Status == PositionCorrectionStatus.NotCompleted)
+            {
+                StepMessage = "当前没有进行中的渐进修正。";
+                return;
+            }
+
+            PublishCorrection(success, result, error);
+        }
+
+        private bool PublishCorrection(bool success, PositionCorrectionResult result, string error, Vector3? target = null)
+        {
+            PublishDisplay(success, "位置修正", error);
+            if (success)
+            {
+                string status = result.Status switch
+                {
+                    PositionCorrectionStatus.Resolved => "已收敛",
+                    PositionCorrectionStatus.IterationLimit => "达到迭代上限",
+                    PositionCorrectionStatus.Skipped => "修正已关闭，已更新碰撞检测",
+                    PositionCorrectionStatus.InProgress => "渐进修正中",
+                    PositionCorrectionStatus.FrameLimit => "达到累计处理帧上限",
+                    _ => "位置无法继续变化"
+                };
+                string frames = UsesGradualCorrection ? "，已处理 " + result.ProcessedFrames + " 帧" : string.Empty;
+                string targetMessage = target.HasValue ? "。目标 " + target.Value.ToString("G9") : "。";
+                StepMessage = status + frames + "，迭代 " + result.Iterations + " 次，最大剩余穿透 "
+                    + result.RemainingDepth.ToDecimal().ToString("G9", CultureInfo.InvariantCulture)
+                    + targetMessage + " 最终 " + CorrectionTransform.position.ToString("G9")
+                    + "，碰撞对 " + PairCount + "，子形状接触 " + ContactCount;
+            }
+
+            return success;
         }
 
         private void ClearDisplay()
@@ -335,6 +410,8 @@ namespace AshFramework.Collide.Samples
 
         private bool PublishDisplay(bool success, string operation, string error)
         {
+            _pairDescriptions.Clear();
+            _contactOrigins.Clear();
             LastStepSucceeded = success;
             StepMessage = success ? operation + "成功，碰撞对 " + _results.Count + "，子形状接触 " + _contacts.Count
                 : operation + "失败：" + error;

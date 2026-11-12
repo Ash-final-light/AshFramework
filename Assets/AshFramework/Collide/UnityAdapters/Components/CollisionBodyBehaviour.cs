@@ -32,6 +32,11 @@ namespace AshFramework.Collide.Unity
         public int ShapeCount => _shapes.Count;
         public bool HasGeometry => _hasGeometry && !_needsRebuild && isActiveAndEnabled;
         public CollisionWorldBehaviour World => _world;
+        internal int CorrectionRevision
+        {
+            get;
+            private set;
+        }
 
         /// <summary>主线程显式绑定；禁用对象也可绑定，换世界时旧身份立即失效。</summary>
         public void BindWorld(CollisionWorldBehaviour world)
@@ -230,6 +235,7 @@ namespace AshFramework.Collide.Unity
 
         private void OnDisable()
         {
+            CorrectionRevision++;
             Fail("Body is disabled or inactive.");
             RequestRebuild();
             if (_boundWorld != null)

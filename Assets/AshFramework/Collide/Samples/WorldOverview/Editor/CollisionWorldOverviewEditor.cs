@@ -57,18 +57,35 @@ namespace AshFramework.Collide.Samples.Editor
             {
                 using (new EditorGUI.DisabledScope(overview.World == null || !overview.World.IsInitialized))
                 {
-                    if (GUILayout.Button("移向墙面并修正"))
+                    if (GUILayout.Button(overview.PrimaryCorrectionLabel))
                     {
-                        Undo.RecordObject(overview.CorrectionTransform, "Move character against wall");
+                        Undo.RecordObject(overview.CorrectionTransform, "Run position correction at primary target");
                         overview.AttemptCorrection(false);
                         SceneView.RepaintAll();
                     }
 
-                    if (GUILayout.Button("移入触发区"))
+                    if (GUILayout.Button(overview.SecondaryCorrectionLabel))
                     {
-                        Undo.RecordObject(overview.CorrectionTransform, "Move character into trigger");
+                        Undo.RecordObject(overview.CorrectionTransform, "Run position correction at secondary target");
                         overview.AttemptCorrection(true);
                         SceneView.RepaintAll();
+                    }
+
+                    if (overview.UsesGradualCorrection)
+                    {
+                        if (GUILayout.Button(overview.CanCorrectPosition ? "关闭位置修正" : "开启并处理当前修正帧"))
+                        {
+                            Undo.RecordObject(overview.CorrectionTransform, "Toggle gradual correction");
+                            overview.ToggleGradualCorrection();
+                            SceneView.RepaintAll();
+                        }
+
+                        if (GUILayout.Button("处理下一修正帧（0.125 秒）"))
+                        {
+                            Undo.RecordObject(overview.CorrectionTransform, "Advance gradual correction frame");
+                            overview.AdvanceGradualCorrection();
+                            SceneView.RepaintAll();
+                        }
                     }
                 }
             }
