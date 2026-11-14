@@ -23,7 +23,7 @@ namespace AshFramework.Collide.Tests
         {
             CollisionBodyId wall = Add(WorldShape2D.FromAabb(new Aabb2D(V(3, 0), V(1, 4))));
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.True, error);
 
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
@@ -41,7 +41,7 @@ namespace AshFramework.Collide.Tests
                 WorldShape2D.FromAabb(new Aabb2D(V(20, 0), new FixVector2(Fix64.Epsilon, 5))));
             Add(world, WorldShape2D.FromObb(new Obb2D(V(40, 0), V(2, 1), FixMath.Pi / 4)));
 
-            Assert.That(world.TrySweepCircle(Circle(0, 0, 1), V(50, 0), _hits,
+            Assert.That(world.TrySweepCircle(Circle(0, 0, 1), V(50, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.True, error);
 
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
@@ -59,7 +59,7 @@ namespace AshFramework.Collide.Tests
             CollisionBodyId second = Add(WorldShape2D.FromAabb(new Aabb2D(V(5, 0), V(1, 4))));
             _index.Candidates.Reverse();
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(10, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(10, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.True, error);
 
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
@@ -77,7 +77,7 @@ namespace AshFramework.Collide.Tests
             Add(WorldShape2D.FromAabb(new Aabb2D(V(5, 0), V(1, 4))));
             Add(WorldShape2D.FromCircle(Circle(0, 0, 2)));
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(10, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(10, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.True, error);
 
             Assert.That(status, Is.EqualTo(CircleSweepStatus.InitialOverlap));
@@ -85,16 +85,67 @@ namespace AshFramework.Collide.Tests
         }
 
         [Test]
+        public void ExcludingRegisteredMoverSkipsSelfAndFindsWall()
+        {
+            CollisionBodyId mover = Add(WorldShape2D.FromCircle(Circle(0, 0, 1)));
+            CollisionBodyId wall = Add(WorldShape2D.FromAabb(new Aabb2D(V(3, 0), V(1, 4))));
+
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), mover, _hits,
+                out CircleSweepStatus status, out string error), Is.True, error);
+
+            Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
+            Assert.That(_hits.Count, Is.EqualTo(1));
+            Assert.That(_hits[0].Body, Is.EqualTo(wall));
+        }
+
+        [Test]
+        public void DefaultExclusionDoesNotSkipRegisteredMover()
+        {
+            Add(WorldShape2D.FromCircle(Circle(0, 0, 1)));
+            Add(WorldShape2D.FromAabb(new Aabb2D(V(3, 0), V(1, 4))));
+
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), default, _hits,
+                out CircleSweepStatus status, out string error), Is.True, error);
+
+            Assert.That(status, Is.EqualTo(CircleSweepStatus.InitialOverlap));
+            Assert.That(_hits, Is.Empty);
+        }
+
+        [Test]
+        public void ForeignAndRemovedExclusionsFailWithoutQuerying()
+        {
+            CollisionBodyId removed = Add(WorldShape2D.FromCircle(Circle(0, 0, 1)));
+            Assert.That(_world.UnregisterBody(removed), Is.True);
+            CollisionWorld other = new CollisionWorld(
+                new Aabb2D(FixVector2.Zero, V(10, 10)), new StubBroadPhase2D());
+            CollisionBodyId foreign = other.RegisterBody();
+
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), removed, _hits,
+                out CircleSweepStatus status, out string error), Is.False);
+            Assert.That(error, Does.Contain("unknown, removed or belongs to another world"));
+            Assert.That(status, Is.EqualTo(CircleSweepStatus.NoHit));
+            Assert.That(_hits, Is.Empty);
+            Assert.That(_index.Calls, Is.Empty);
+
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), foreign, _hits,
+                out status, out error), Is.False);
+            Assert.That(error, Does.Contain("unknown, removed or belongs to another world"));
+            Assert.That(status, Is.EqualTo(CircleSweepStatus.NoHit));
+            Assert.That(_hits, Is.Empty);
+            Assert.That(_index.Calls, Is.Empty);
+        }
+
+        [Test]
         public void EndpointTangencyAndZeroMovementHaveStableStatuses()
         {
             Add(WorldShape2D.FromCircle(Circle(5, 0, 1)));
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(3, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(3, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.True, error);
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
             Assert.That(_hits[0].Time, Is.EqualTo(Fix64.One));
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 10, 1), FixVector2.Zero, _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 10, 1), FixVector2.Zero, default, _hits,
                 out status, out error), Is.True, error);
             Assert.That(status, Is.EqualTo(CircleSweepStatus.NoHit));
             Assert.That(_hits, Is.Empty);
@@ -107,14 +158,14 @@ namespace AshFramework.Collide.Tests
             _hits.Add(new CircleSweepHit2D(wall, 0, Fix64.Zero, V(0, 0), V(-1, 0)));
             _index.FailOperation = "Query";
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.False);
             Assert.That(error, Does.Contain("Query"));
             Assert.That(status, Is.EqualTo(CircleSweepStatus.NoHit));
             Assert.That(_hits, Is.Empty);
             _index.Calls.Clear();
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), default, _hits,
                 out status, out error), Is.True, error);
             Assert.That(_index.Calls[0], Is.EqualTo("Clear"));
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
@@ -128,7 +179,7 @@ namespace AshFramework.Collide.Tests
                 new Aabb2D(FixVector2.Zero, V(10, 10)), new StubBroadPhase2D());
             _index.InvalidCandidates.Add(other.RegisterBody());
 
-            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), _hits,
+            Assert.That(_world.TrySweepCircle(Circle(0, 0, 1), V(5, 0), default, _hits,
                 out CircleSweepStatus status, out string error), Is.False);
 
             Assert.That(error, Does.Contain("unknown or inactive"));

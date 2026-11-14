@@ -298,8 +298,8 @@ namespace AshFramework.Collide
             return TryQueryArea(default, area, ShapeKind2D.Aabb, results, out error);
         }
 
-        public bool TrySweepCircle(Circle2D circle, FixVector2 translation, List<CircleSweepHit2D> hits,
-            out CircleSweepStatus status, out string error)
+        public bool TrySweepCircle(Circle2D circle, FixVector2 translation, CollisionBodyId excludedBody,
+            List<CircleSweepHit2D> hits, out CircleSweepStatus status, out string error)
         {
             EnsureNotStepping();
             if (hits == null)
@@ -309,6 +309,12 @@ namespace AshFramework.Collide
 
             hits.Clear();
             status = CircleSweepStatus.NoHit;
+            if (excludedBody.IsValid && !TryGetRecord(excludedBody, out _))
+            {
+                error = "Excluded body is unknown, removed or belongs to another world.";
+                return false;
+            }
+
             _stepping = true;
             try
             {
@@ -319,6 +325,11 @@ namespace AshFramework.Collide
                 Fix64 earliest = Fix64.One;
                 foreach (CollisionBodyId id in _candidates)
                 {
+                    if (id == excludedBody)
+                    {
+                        continue;
+                    }
+
                     if (!TryGetRecord(id, out CollisionBodyRecord record) || !record.Active || !record.Indexed)
                     {
                         throw new InvalidOperationException("Index returned an unknown or inactive body.");

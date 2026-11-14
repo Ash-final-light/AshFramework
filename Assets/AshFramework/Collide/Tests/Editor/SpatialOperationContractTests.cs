@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using AshFramework.Math;
 using NUnit.Framework;
 
@@ -12,6 +13,23 @@ namespace AshFramework.Collide.Tests
             Assert.That((int)CircleSweepStatus.NoHit, Is.EqualTo(0));
             Assert.That((int)CircleSweepStatus.Hit, Is.EqualTo(1));
             Assert.That((int)CircleSweepStatus.InitialOverlap, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void SweepContractIncludesExplicitBodyExclusion()
+        {
+            Type[] parameters =
+            {
+                typeof(Circle2D),
+                typeof(FixVector2),
+                typeof(CollisionBodyId),
+                typeof(List<CircleSweepHit2D>),
+                typeof(CircleSweepStatus).MakeByRefType(),
+                typeof(string).MakeByRefType()
+            };
+
+            Assert.That(typeof(ICollisionWorldSpatialOperations2D).GetMethod(
+                nameof(ICollisionWorldSpatialOperations2D.TrySweepCircle), parameters), Is.Not.Null);
         }
 
         [Test]

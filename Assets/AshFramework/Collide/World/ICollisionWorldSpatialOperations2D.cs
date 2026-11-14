@@ -35,9 +35,10 @@ namespace AshFramework.Collide
         /// 将单圆沿 translation 对固定 Body 做连续平移扫掠。hits 只包含最早时刻的全部命中，
         /// 按 Body ID 和子形状索引排序。相切算接触；从相切边界向外或沿切线移动不构成阻挡。
         /// 初始正深度穿透返回 InitialOverlap 且 hits 为空，交由位置修正处理。零位移若未初始穿透
-        /// 返回 NoHit。失败时 hits 为空，status 为 NoHit，不发布部分结果。
+        /// 返回 NoHit。excludedBody 为 default 时不排除候选；有效值必须属于当前世界且仍注册，
+        /// 成功查询时忽略该 Body，异世界或已注销 ID 使操作失败。失败时 hits 为空、status 为 NoHit。
         /// </summary>
-        bool TrySweepCircle(Circle2D circle, FixVector2 translation, List<CircleSweepHit2D> hits,
-            out CircleSweepStatus status, out string error);
+        bool TrySweepCircle(Circle2D circle, FixVector2 translation, CollisionBodyId excludedBody,
+            List<CircleSweepHit2D> hits, out CircleSweepStatus status, out string error);
     }
 }
