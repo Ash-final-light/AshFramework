@@ -212,6 +212,15 @@ namespace AshFramework.Collide.Unity
             return HasGeometry && _geometry.TryGetBounds(out bounds);
         }
 
+        internal void CommitTeleport(Vector3 targetPosition, CompoundShape2D targetGeometry)
+        {
+            transform.position = targetPosition;
+            _geometry.CopyFrom(targetGeometry);
+            _hasGeometry = true;
+            LastError = string.Empty;
+            CorrectionRevision++;
+        }
+
         private bool Fail(string error)
         {
             _geometry.Clear();

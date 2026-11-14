@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AshFramework.Math;
 using AshFramework.Math.Unity;
 using UnityEngine;
 
@@ -29,6 +30,8 @@ namespace AshFramework.Collide.Unity
 
         // 遍历前复用快照，允许准备阶段清理解绑、换世界及已销毁对象。
         private readonly List<CollisionBodyBehaviour> _bodyBuffer = new List<CollisionBodyBehaviour>();
+        private readonly List<WorldShape2D> _teleportShapes = new List<WorldShape2D>();
+        private readonly CompoundShape2D _teleportGeometry = new CompoundShape2D();
         private CollisionWorld _core;
         private IBroadPhase2D _broadPhase;
         private CollisionPlane _initializedPlane;
@@ -135,6 +138,74 @@ namespace AshFramework.Collide.Unity
             }
 
             return registration.Error;
+        }
+
+        /// <summary>
+        /// 将已注册 Body 传送到世界位置。核心事务成功后才提交 Transform；成功传送会使旧渐进修正失效。
+        /// </summary>
+        public bool TryTeleportTo(CollisionBodyBehaviour body, Vector3 targetPosition,
+            List<CollisionContact> contacts, out string error)
+        {
+            if (contacts == null)
+            {
+                throw new ArgumentNullException(nameof(contacts));
+            }
+
+            EnsureNotStepping();
+            contacts.Clear();
+            ReconcileTrackedBodies();
+            if (!CanRunSpatialOperation(out error))
+            {
+                return false;
+            }
+
+            if (body == null || !_bodies.TryGetValue(body, out BodyRegistration registration)
+                || !registration.Id.IsValid || body.World != this)
+            {
+                return Fail("Teleport requires a body registered in this world.", out error);
+            }
+
+            if (!IsFinitePosition(targetPosition))
+            {
+                return Fail("Teleport target position must be finite.", out error);
+            }
+
+            _stepping = true;
+            try
+            {
+                foreach (KeyValuePair<CollisionBodyBehaviour, BodyRegistration> entry in _bodies)
+                {
+                    PrepareBody(entry.Key, entry.Value);
+                }
+
+                if (!_core.IsBodyActive(registration.Id))
+                {
+                    return Fail("Teleport requires an active body: " + registration.Error, out error);
+                }
+
+                if (!TryBuildTranslatedGeometry(body, targetPosition, out error))
+                {
+                    LastError = error;
+                    return false;
+                }
+
+                if (!_core.TryTeleportTo(registration.Id, _teleportGeometry, contacts, out error))
+                {
+                    LastError = error;
+                    return false;
+                }
+
+                body.CommitTeleport(targetPosition, _teleportGeometry);
+                registration.Error = string.Empty;
+                LastError = string.Empty;
+                return true;
+            }
+            finally
+            {
+                _teleportShapes.Clear();
+                _teleportGeometry.Clear();
+                _stepping = false;
+            }
         }
 
         /// <summary>先准备所有对象，再统一同步索引及检测；失败时结果为空。Body 数据错误不终止其他对象。</summary>
@@ -269,6 +340,88 @@ namespace AshFramework.Collide.Unity
             {
                 _core.TrySubmitGeometry(registration.Id, body.Geometry, body.LogicalHeight, out registration.Error);
             }
+        }
+
+        private bool TryBuildTranslatedGeometry(CollisionBodyBehaviour body, Vector3 targetPosition, out string error)
+        {
+            Vector3 currentPosition = body.transform.position;
+            Vector2 current = _initializedPlane == CollisionPlane.XY
+                ? new Vector2(currentPosition.x, currentPosition.y)
+                : new Vector2(currentPosition.x, currentPosition.z);
+            Vector2 target = _initializedPlane == CollisionPlane.XY
+                ? new Vector2(targetPosition.x, targetPosition.y)
+                : new Vector2(targetPosition.x, targetPosition.z);
+            try
+            {
+                FixVector2 translation = (target - current).ToFixVector();
+                CompoundShape2D source = body.Geometry;
+                _teleportShapes.Clear();
+                for (int i = 0; i < source.Count; i++)
+                {
+                    _teleportShapes.Add(Translate(source[i], translation));
+                }
+
+                _teleportGeometry.SetShapes(_teleportShapes);
+                error = string.Empty;
+                return true;
+            }
+            catch (ArgumentException exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+            catch (OverflowException exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+        }
+
+        private static WorldShape2D Translate(WorldShape2D shape, FixVector2 translation)
+        {
+            switch (shape.Kind)
+            {
+                case ShapeKind2D.Circle:
+                    Circle2D circle = shape.Circle;
+                    return WorldShape2D.FromCircle(new Circle2D(circle.Center + translation, circle.Radius));
+                case ShapeKind2D.Aabb:
+                    Aabb2D aabb = shape.Aabb;
+                    return WorldShape2D.FromAabb(new Aabb2D(aabb.Center + translation, aabb.HalfExtents));
+                case ShapeKind2D.Obb:
+                    Obb2D obb = shape.Obb;
+                    return WorldShape2D.FromObb(new Obb2D(obb.Center + translation, obb.HalfExtents, obb.Rotation));
+                default:
+                    throw new ArgumentException("Unsupported world shape kind.", nameof(shape));
+            }
+        }
+
+        private bool CanRunSpatialOperation(out string error)
+        {
+            if (!IsInitialized)
+            {
+                return Fail("World is not initialized; inject an IBroadPhase2D first.", out error);
+            }
+
+            if (!isActiveAndEnabled)
+            {
+                return Fail("World is disabled or inactive.", out error);
+            }
+
+            if (_plane != _initializedPlane || !_boundsCenter.Equals(_initializedCenter)
+                || !_boundsHalfExtents.Equals(_initializedHalfExtents))
+            {
+                SuspendAllBodies();
+                return Fail("World configuration changed after initialization; restore the fixed configuration.", out error);
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        private static bool IsFinitePosition(Vector3 position)
+        {
+            return ShapeGeometryPreparation.IsFinite(position.x) && ShapeGeometryPreparation.IsFinite(position.y)
+                && ShapeGeometryPreparation.IsFinite(position.z);
         }
 
         private void ReconcileTrackedBodies()

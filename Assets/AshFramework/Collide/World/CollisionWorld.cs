@@ -40,6 +40,7 @@ namespace AshFramework.Collide
         private readonly List<CollisionPair> _pairs = new List<CollisionPair>();
         private readonly List<CompoundContact2D> _compoundContacts = new List<CompoundContact2D>();
         private readonly List<CollisionContact> _contacts = new List<CollisionContact>();
+        private readonly CompoundShape2D _teleportBackup = new CompoundShape2D();
 
         /// <summary>内部记录引用数组，按需扩容；数组下标是可复用的槽位，不是 Body ID。</summary>
         private CollisionBodyRecord[] _slots = new CollisionBodyRecord[16];
@@ -193,6 +194,97 @@ namespace AshFramework.Collide
         }
 
         /// <summary>
+        /// 原子替换指定 Body 的世界几何并同步索引。落点重叠仍成功并返回该 Body 的全部接触；
+        /// 失败时恢复原几何，清空输出，并让下一次空间操作重建可能不可信的索引。
+        /// </summary>
+        public bool TryTeleportTo(CollisionBodyId id, CompoundShape2D targetGeometry,
+            List<CollisionContact> contacts, out string error)
+        {
+            EnsureNotStepping();
+            if (contacts == null)
+            {
+                throw new ArgumentNullException(nameof(contacts));
+            }
+
+            contacts.Clear();
+            CollisionBodyRecord record = RequireRecord(id);
+            if (!record.Active)
+            {
+                error = "Teleport requires an active body.";
+                return false;
+            }
+
+            if (targetGeometry == null || !targetGeometry.TryGetBounds(out Aabb2D targetBounds))
+            {
+                error = "Teleport requires non-empty prepared geometry.";
+                return false;
+            }
+
+            if (!ContainsBounds(targetBounds))
+            {
+                error = "Teleport target exceeds the world coverage.";
+                return false;
+            }
+
+            _teleportBackup.CopyFrom(record.Geometry);
+            record.Geometry.TryGetBounds(out Aabb2D originalBounds);
+            _stepping = true;
+            bool geometryReplaced = false;
+            try
+            {
+                SynchronizeIndex();
+                record.Geometry.CopyFrom(targetGeometry);
+                geometryReplaced = true;
+                _broadPhase.Update(id, targetBounds);
+                record.IndexedBounds = targetBounds;
+
+                _candidates.Clear();
+                _broadPhase.Query(targetBounds, _candidates);
+                foreach (CollisionBodyId candidateId in _candidates)
+                {
+                    if (!TryGetRecord(candidateId, out CollisionBodyRecord other) || !other.Active || !other.Indexed)
+                    {
+                        throw new InvalidOperationException("Index returned an unknown or inactive body.");
+                    }
+
+                    if (candidateId == id)
+                    {
+                        continue;
+                    }
+
+                    CollectTeleportContacts(record, other);
+                }
+
+                _contacts.Sort(CompareContacts);
+                contacts.AddRange(_contacts);
+                record.Error = string.Empty;
+                error = string.Empty;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                if (geometryReplaced)
+                {
+                    record.Geometry.CopyFrom(_teleportBackup);
+                    TryRestoreTeleportProxy(record, originalBounds);
+                }
+
+                _needsRebuild = true;
+                contacts.Clear();
+                error = exception.Message;
+                return false;
+            }
+            finally
+            {
+                _candidates.Clear();
+                _compoundContacts.Clear();
+                _contacts.Clear();
+                _teleportBackup.Clear();
+                _stepping = false;
+            }
+        }
+
+        /// <summary>
         /// 先同步全部索引，再查询和精筛。清空 results；失败不输出部分结果。
         /// 索引失败后，下次先 Clear 并按当前有效记录重建，不承诺回滚已提交数据。
         /// </summary>
@@ -313,6 +405,23 @@ namespace AshFramework.Collide
             }
         }
 
+        private void CollectTeleportContacts(CollisionBodyRecord body, CollisionBodyRecord other)
+        {
+            CollisionBodyRecord a = body.Id.Value < other.Id.Value ? body : other;
+            CollisionBodyRecord b = body.Id.Value < other.Id.Value ? other : body;
+            CompoundCollision2D.CollectContacts(a.Geometry, b.Geometry, _compoundContacts);
+            if (_compoundContacts.Count == 0)
+            {
+                return;
+            }
+
+            CollisionPair pair = new CollisionPair(a.Id, b.Id);
+            foreach (CompoundContact2D contact in _compoundContacts)
+            {
+                _contacts.Add(new CollisionContact(pair, contact));
+            }
+        }
+
         private static int CompareContacts(CollisionContact a, CollisionContact b)
         {
             int pairOrder = a.Pair.CompareTo(b.Pair);
@@ -377,6 +486,22 @@ namespace AshFramework.Collide
             _needsRebuild = false;
         }
 
+        private void TryRestoreTeleportProxy(CollisionBodyRecord record, Aabb2D originalBounds)
+        {
+            try
+            {
+                if (record.Indexed)
+                {
+                    _broadPhase.Update(record.Id, originalBounds);
+                    record.IndexedBounds = originalBounds;
+                }
+            }
+            catch
+            {
+                // The authoritative geometry is already restored. The next operation rebuilds the entire index.
+            }
+        }
+
         private void RemoveIndexed(CollisionBodyRecord record)
         {
             if (record.Indexed)
@@ -411,6 +536,12 @@ namespace AshFramework.Collide
             record.Error = reason;
             error = reason;
             return false;
+        }
+
+        private bool ContainsBounds(Aabb2D bounds)
+        {
+            return bounds.Min.X >= Bounds.Min.X && bounds.Min.Y >= Bounds.Min.Y
+                && bounds.Max.X <= Bounds.Max.X && bounds.Max.Y <= Bounds.Max.Y;
         }
 
         private bool TryGetRecord(CollisionBodyId id, out CollisionBodyRecord record)
