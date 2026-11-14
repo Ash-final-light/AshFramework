@@ -39,6 +39,8 @@ Unity 层提供单角色对固定障碍的位置修正。核心检测仍按几�
 
 实施状态见 [接口版碰撞世界代码计划](Ref/CollisionWorldCorePlan.md) 和 [位置修正实施计划](Ref/PositionCorrectionPlan.md)。
 
+后续六阶段的实施顺序、自动驱动流程和验收标准见 [碰撞框架完整路线图](Ref/CollisionRoadmap.md)。
+
 ## 数据与判定约定
 
 ### 核心世界使用约定
