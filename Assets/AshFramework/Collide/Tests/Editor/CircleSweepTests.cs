@@ -31,8 +31,9 @@ namespace AshFramework.Collide.Tests
                 out CircleSweepGeometryHit2D hit);
 
             Assert.That(status, Is.EqualTo(CircleSweepStatus.Hit));
-            Assert.That(hit.Center.X, Is.LessThanOrEqualTo(Fix64.FromInt(49) + halfRaw));
-            Assert.That(hit.Center.X, Is.GreaterThanOrEqualTo(Fix64.FromInt(49) - halfRaw));
+            Fix64 contactCenter = Fix64.FromInt(49) - halfRaw;
+            Assert.That(hit.Center.X, Is.LessThanOrEqualTo(contactCenter));
+            AssertRawNear(hit.Center.X, contactCenter, 4);
         }
 
         [Test]
