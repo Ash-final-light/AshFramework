@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using AshFramework.Math;
 
 namespace AshFramework.Collide
 {
@@ -7,7 +8,7 @@ namespace AshFramework.Collide
     /// 单线程碰撞世界，持有几何副本。提交和生命周期修改仅在 Step 外执行。
     /// 索引由调用方提供空实例并交由本世界独占，不提供默认算法。
     /// </summary>
-    public sealed class CollisionWorld
+    public sealed class CollisionWorld : ICollisionWorldSpatialOperations2D
     {
         /// <summary>本世界独有的身份标记。ID 持有此引用，用于拒绝跨世界访问。</summary>
         private readonly object _identity = new object();
@@ -36,6 +37,8 @@ namespace AshFramework.Collide
         /// <summary>单次范围查询的候选 ID 缓冲，每查询一个 Body 前清空并复用。</summary>
         private readonly List<CollisionBodyId> _candidates = new List<CollisionBodyId>();
         private readonly List<CollisionBodyId> _queryResults = new List<CollisionBodyId>();
+        private readonly List<CircleSweepShapeHit2D> _sweepShapeHits = new List<CircleSweepShapeHit2D>();
+        private readonly List<CircleSweepHit2D> _sweepHits = new List<CircleSweepHit2D>();
 
         /// <summary>本步精筛命中的规范化配对缓冲；全部检测成功并排序后才复制给调用方。</summary>
         private readonly List<CollisionPair> _pairs = new List<CollisionPair>();
@@ -295,6 +298,96 @@ namespace AshFramework.Collide
             return TryQueryArea(default, area, ShapeKind2D.Aabb, results, out error);
         }
 
+        public bool TrySweepCircle(Circle2D circle, FixVector2 translation, List<CircleSweepHit2D> hits,
+            out CircleSweepStatus status, out string error)
+        {
+            EnsureNotStepping();
+            if (hits == null)
+            {
+                throw new ArgumentNullException(nameof(hits));
+            }
+
+            hits.Clear();
+            status = CircleSweepStatus.NoHit;
+            _stepping = true;
+            try
+            {
+                Aabb2D sweptBounds = GetSweptBounds(circle, translation);
+                SynchronizeIndex();
+                _candidates.Clear();
+                _broadPhase.Query(sweptBounds, _candidates);
+                Fix64 earliest = Fix64.One;
+                foreach (CollisionBodyId id in _candidates)
+                {
+                    if (!TryGetRecord(id, out CollisionBodyRecord record) || !record.Active || !record.Indexed)
+                    {
+                        throw new InvalidOperationException("Index returned an unknown or inactive body.");
+                    }
+
+                    CircleSweepStatus candidateStatus = CircleSweep2D.Sweep(
+                        circle, translation, record.Geometry, _sweepShapeHits);
+                    if (candidateStatus == CircleSweepStatus.InitialOverlap)
+                    {
+                        _sweepHits.Clear();
+                        status = CircleSweepStatus.InitialOverlap;
+                        error = string.Empty;
+                        return true;
+                    }
+
+                    if (candidateStatus != CircleSweepStatus.Hit)
+                    {
+                        continue;
+                    }
+
+                    Fix64 candidateTime = _sweepShapeHits[0].Time;
+                    if (status != CircleSweepStatus.Hit || candidateTime < earliest)
+                    {
+                        _sweepHits.Clear();
+                        earliest = candidateTime;
+                        status = CircleSweepStatus.Hit;
+                    }
+
+                    if (candidateTime == earliest)
+                    {
+                        foreach (CircleSweepShapeHit2D shapeHit in _sweepShapeHits)
+                        {
+                            _sweepHits.Add(new CircleSweepHit2D(id, shapeHit.ShapeIndex,
+                                shapeHit.Time, shapeHit.Center, shapeHit.Normal));
+                        }
+                    }
+                }
+
+                _sweepHits.Sort();
+                CircleSweepHit2D previous = default;
+                foreach (CircleSweepHit2D hit in _sweepHits)
+                {
+                    if (!previous.IsValid || hit != previous)
+                    {
+                        hits.Add(hit);
+                        previous = hit;
+                    }
+                }
+
+                error = string.Empty;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _needsRebuild = true;
+                hits.Clear();
+                status = CircleSweepStatus.NoHit;
+                error = exception.Message;
+                return false;
+            }
+            finally
+            {
+                _candidates.Clear();
+                _sweepShapeHits.Clear();
+                _sweepHits.Clear();
+                _stepping = false;
+            }
+        }
+
         /// <summary>
         /// 先同步全部索引，再查询和精筛。清空 results；失败不输出部分结果。
         /// 索引失败后，下次先 Clear 并按当前有效记录重建，不承诺回滚已提交数据。
@@ -496,6 +589,20 @@ namespace AshFramework.Collide
         private static int CompareBodyIds(CollisionBodyId a, CollisionBodyId b)
         {
             return a.Value.CompareTo(b.Value);
+        }
+
+        private static Aabb2D GetSweptBounds(Circle2D circle, FixVector2 translation)
+        {
+            circle.Validate();
+            Aabb2D start = circle.GetBounds();
+            Aabb2D end = new Circle2D(circle.Center + translation, circle.Radius).GetBounds();
+            FixVector2 min = new FixVector2(
+                FixMath.Min(start.Min.X, end.Min.X),
+                FixMath.Min(start.Min.Y, end.Min.Y));
+            FixVector2 max = new FixVector2(
+                FixMath.Max(start.Max.X, end.Max.X),
+                FixMath.Max(start.Max.Y, end.Max.Y));
+            return new Aabb2D((min + max) / 2, (max - min) / 2);
         }
 
         private void CollectTeleportContacts(CollisionBodyRecord body, CollisionBodyRecord other)
