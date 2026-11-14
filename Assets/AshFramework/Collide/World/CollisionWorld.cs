@@ -35,6 +35,7 @@ namespace AshFramework.Collide
 
         /// <summary>单次范围查询的候选 ID 缓冲，每查询一个 Body 前清空并复用。</summary>
         private readonly List<CollisionBodyId> _candidates = new List<CollisionBodyId>();
+        private readonly List<CollisionBodyId> _queryResults = new List<CollisionBodyId>();
 
         /// <summary>本步精筛命中的规范化配对缓冲；全部检测成功并排序后才复制给调用方。</summary>
         private readonly List<CollisionPair> _pairs = new List<CollisionPair>();
@@ -284,6 +285,16 @@ namespace AshFramework.Collide
             }
         }
 
+        public bool TryQueryCircle(Circle2D area, List<CollisionBodyId> results, out string error)
+        {
+            return TryQueryArea(area, default, ShapeKind2D.Circle, results, out error);
+        }
+
+        public bool TryQueryAabb(Aabb2D area, List<CollisionBodyId> results, out string error)
+        {
+            return TryQueryArea(default, area, ShapeKind2D.Aabb, results, out error);
+        }
+
         /// <summary>
         /// 先同步全部索引，再查询和精筛。清空 results；失败不输出部分结果。
         /// 索引失败后，下次先 Clear 并按当前有效记录重建，不承诺回滚已提交数据。
@@ -403,6 +414,88 @@ namespace AshFramework.Collide
             {
                 _contacts.Add(new CollisionContact(pair, contact));
             }
+        }
+
+        private bool TryQueryArea(Circle2D circle, Aabb2D aabb, ShapeKind2D kind,
+            List<CollisionBodyId> results, out string error)
+        {
+            EnsureNotStepping();
+            if (results == null)
+            {
+                throw new ArgumentNullException(nameof(results));
+            }
+
+            results.Clear();
+            _stepping = true;
+            try
+            {
+                WorldShape2D area = kind == ShapeKind2D.Circle
+                    ? WorldShape2D.FromCircle(circle)
+                    : WorldShape2D.FromAabb(aabb);
+                Aabb2D bounds = area.GetBounds();
+                SynchronizeIndex();
+                _candidates.Clear();
+                _broadPhase.Query(bounds, _candidates);
+                foreach (CollisionBodyId id in _candidates)
+                {
+                    if (!TryGetRecord(id, out CollisionBodyRecord record) || !record.Active || !record.Indexed)
+                    {
+                        throw new InvalidOperationException("Index returned an unknown or inactive body.");
+                    }
+
+                    if (OverlapsArea(area, record.Geometry))
+                    {
+                        _queryResults.Add(id);
+                    }
+                }
+
+                _queryResults.Sort(CompareBodyIds);
+                CollisionBodyId previous = default;
+                foreach (CollisionBodyId id in _queryResults)
+                {
+                    if (id != previous)
+                    {
+                        results.Add(id);
+                        previous = id;
+                    }
+                }
+
+                error = string.Empty;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _needsRebuild = true;
+                results.Clear();
+                error = exception.Message;
+                return false;
+            }
+            finally
+            {
+                _candidates.Clear();
+                _queryResults.Clear();
+                _stepping = false;
+            }
+        }
+
+        private static bool OverlapsArea(WorldShape2D area, CompoundShape2D geometry)
+        {
+            for (int i = 0; i < geometry.Count; i++)
+            {
+                WorldShape2D shape = geometry[i];
+                if (Collision2D.Overlaps(area.GetBounds(), shape.GetBounds())
+                    && CompoundCollision2D.Overlaps(area, shape))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int CompareBodyIds(CollisionBodyId a, CollisionBodyId b)
+        {
+            return a.Value.CompareTo(b.Value);
         }
 
         private void CollectTeleportContacts(CollisionBodyRecord body, CollisionBodyRecord other)
